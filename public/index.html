@@ -276,12 +276,32 @@
       resize: none; min-height: 20px; max-height: 80px; line-height: 1.4;
     }
     .quick-post-input:focus { border-color: rgba(232,69,60,0.4); }
+    .quick-post-actions {
+      display: flex; flex-direction: column; gap: 6px; align-items: center;
+    }
+    .quick-post-img-btn {
+      background: none; border: none; color: var(--text-muted);
+      cursor: pointer; padding: 4px; transition: color 0.15s;
+    }
+    .quick-post-img-btn:hover { color: var(--text); }
     .quick-post-btn {
       padding: 8px 16px; background: var(--red); border: none;
       color: #fff; font-size: 13px; border-radius: 10px; cursor: pointer;
       font-family: var(--font-body); font-weight: 600; white-space: nowrap;
     }
     .quick-post-btn:hover { opacity: 0.9; }
+    .quick-post-preview {
+      width: 100%; position: relative;
+    }
+    .quick-post-preview img {
+      max-height: 120px; border-radius: 8px; border: 1px solid var(--border);
+    }
+    .quick-post-preview-close {
+      position: absolute; top: 4px; right: 4px;
+      background: rgba(0,0,0,0.6); border: none; color: #fff;
+      width: 20px; height: 20px; border-radius: 50%; cursor: pointer;
+      font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center;
+    }
 
     /* Tabs */
     .tab-bar {
@@ -315,6 +335,14 @@
       backdrop-filter: blur(4px);
     }
     .profile-back:hover { background: rgba(0,0,0,0.7); }
+    .profile-banner-edit {
+      position: absolute; bottom: 12px; right: 12px;
+      background: rgba(0,0,0,0.5); border: none; color: #fff;
+      width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(4px); transition: background 0.2s;
+    }
+    .profile-banner-edit:hover { background: rgba(0,0,0,0.7); }
     .profile-header {
       padding: 0 20px; margin-top: -32px; position: relative;
     }
@@ -378,6 +406,15 @@
     }
     .post-text a { color: var(--red); text-decoration: none; }
     .post-text a:hover { text-decoration: underline; }
+    .post-image {
+      margin: 8px 0; border-radius: 10px; overflow: hidden;
+      max-width: 100%;
+    }
+    .post-image img {
+      width: 100%; max-height: 300px; object-fit: cover;
+      cursor: pointer; display: block;
+      border-radius: 10px; border: 1px solid var(--border);
+    }
     .post-actions {
       display: flex; gap: 20px; font-size: 12px; color: var(--text-muted);
       font-family: var(--font-mono);
@@ -415,6 +452,11 @@
     .post-empty {
       text-align: center; color: #555; padding: 30px; font-size: 13px;
     }
+    /* Feed-specific post tweaks (posts inside contacts-list container) */
+    .contacts-list > .post {
+      padding: 12px 4px; border-bottom: 1px solid var(--border);
+    }
+    .contacts-list > .post:last-child { border-bottom: none; }
     /* Bio edit */
     .bio-edit-area {
       width: 100%; background: var(--surface); border: 1px solid var(--border);
@@ -1385,6 +1427,26 @@
       .stream-viewers-panel { right: 12px; top: 50px; min-width: 140px; }
       .stream-overlay { top: 14px; left: 12px; }
 
+      /* Tabs & quick post */
+      .tab { font-size: 12px; padding: 7px 0; }
+      .quick-post-input { font-size: 12px; padding: 6px 10px; }
+      .quick-post-btn { font-size: 12px; padding: 6px 12px; }
+      .quick-post-preview img { max-height: 80px; }
+
+      /* Profile */
+      .profile-banner { height: 120px; }
+      .profile-avatar { width: 52px; height: 52px; }
+      .profile-name { font-size: 18px; }
+      .profile-handle { font-size: 11px; }
+      .profile-bio { font-size: 12px; }
+      .profile-stats-row { font-size: 11px; gap: 12px; }
+      .profile-posts { padding: 0 14px 14px; }
+      .post-text { font-size: 13px; }
+      .post-image img { max-height: 200px; }
+      .post-actions { gap: 16px; }
+      .quick-post-input { font-size: 12px; }
+      .notif-panel { width: 260px; }
+
       /* Chat panel */
       .chat-panel { max-height: 200px; }
       .chat-msg-pfp { width: 20px; height: 20px; }
@@ -1589,7 +1651,14 @@
     <!-- Quick post -->
     <div class="quick-post" id="quick-post">
       <textarea class="quick-post-input" id="quick-post-input" placeholder="What's on your mind?" maxlength="500" rows="1"></textarea>
-      <button class="quick-post-btn" id="quick-post-btn">Post</button>
+      <div class="quick-post-actions">
+        <button class="quick-post-img-btn" id="quick-post-img-btn" title="Add image">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        </button>
+        <button class="quick-post-btn" id="quick-post-btn">Post</button>
+      </div>
+      <div class="quick-post-preview" id="quick-post-preview" style="display:none;"></div>
+      <input type="file" id="quick-post-file" accept="image/*" style="display:none;" />
     </div>
 
     <!-- Tab switcher -->
@@ -1645,6 +1714,9 @@
     <div class="profile-banner" id="profile-banner">
       <button class="profile-back" id="profile-back" onclick="showScreen('contacts-screen')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+      </button>
+      <button class="profile-banner-edit" id="profile-banner-edit" onclick="editBanner()" style="display:none;" title="Change banner">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
       </button>
     </div>
     <div class="profile-header">
@@ -3046,7 +3118,7 @@ function endCurrentCall() {
 
 function cleanup() {
   stopTimer(); stopCamera(); closePeerConnection(); stopRingtone(); stopFlashTitle();
-  currentCallId = null; isCaller = false;
+  currentCallId = null; currentRemote = null; isCaller = false;
   callChatUnread = 0;
   $("#call-chat-badge").classList.remove("active");
   $("#local-pfp-placeholder").classList.remove("active");
@@ -3124,6 +3196,13 @@ function connectSocket() {
     showScreen("contacts-screen");
     // Pre-load feed
     if (socket) socket.emit("get-global-feed", { limit: 30 });
+    // Auto-switch to Feed tab for users with no saved contacts
+    if (!myContacts || myContacts.length === 0) {
+      setTimeout(() => {
+        const feedTab = document.getElementById("tab-feed");
+        if (feedTab && !feedTab.classList.contains("active")) feedTab.click();
+      }, 500);
+    }
     if (reconnected) {
       showToast("Reconnected!", "success");
     }
@@ -3187,6 +3266,11 @@ function connectSocket() {
   socket.on("contacts-list", (contacts) => {
     myContacts = contacts || [];
     renderContacts($("#search-input").value);
+    // If user has no contacts and no other users online, show feed
+    if (myContacts.length === 0 && users.filter(u => u.userId !== myUserId).length === 0) {
+      const feedTab = document.getElementById("tab-feed");
+      if (feedTab && !feedTab.classList.contains("active")) feedTab.click();
+    }
   });
 
   // Caller flow
@@ -3673,7 +3757,9 @@ $("#link-x-btn").addEventListener("click", () => {
 function linkify(text) {
   const escaped = escapeHtml(text);
   return escaped.replace(/(https?:\/\/[^\s<]+)/g, (url) => {
-    const display = url.length > 40 ? url.slice(0, 37) + "..." : url;
+    // Strip protocol and trailing slash for display, like Twitter
+    let display = url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    if (display.length > 35) display = display.slice(0, 32) + "...";
     return `<a href="${url}" target="_blank" rel="noopener noreferrer">${display}</a>`;
   });
 }
@@ -3718,14 +3804,27 @@ function showProfile(username) {
 
 // Profile data received
 function handleProfileData(data) {
+  const avatarEl = $("#profile-avatar");
   if (data.avatar) {
-    const el = $("#profile-avatar");
-    el.style.background = `url(${data.avatar}) center/cover`;
-    el.innerHTML = "";
+    avatarEl.style.background = `url(${data.avatar}) center/cover`;
+    avatarEl.innerHTML = "";
+  }
+  // Make avatar clickable to change pfp on own profile
+  if (profileIsOwn) {
+    avatarEl.style.cursor = "pointer";
+    avatarEl.title = "Change profile picture";
+    avatarEl.onclick = () => document.getElementById("pfp-change-input").click();
+  } else {
+    avatarEl.style.cursor = "";
+    avatarEl.title = "";
+    avatarEl.onclick = null;
   }
   if (data.banner) {
     $("#profile-banner").style.backgroundImage = `url(${data.banner})`;
   }
+  // Show/hide banner edit button
+  const bannerEdit = document.getElementById("profile-banner-edit");
+  if (bannerEdit) bannerEdit.style.display = profileIsOwn ? "" : "none";
   $("#profile-name").textContent = data.displayName || data.username;
   let handleHtml = "";
   if (data.xUsername) handleHtml += `<a href="https://x.com/${escapeHtml(data.xUsername)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">@${escapeHtml(data.xUsername)}</a>`;
@@ -3848,7 +3947,8 @@ function renderPost(post, isThread = false) {
     <span class="post-author" style="cursor:pointer" onclick="showProfile('${escapeHtml(displayName).replace(/'/g,"\\'")}')">${escapeHtml(displayName)}</span>
     <span class="post-time">${timeAgo(post.createdAt)}</span>
   </div>
-  <div class="post-text">${linkify(post.text)}</div>
+  ${post.text ? `<div class="post-text">${linkify(post.text)}</div>` : ""}
+  ${post.image ? `<div class="post-image"><img src="${escapeHtml(post.image)}" alt="" loading="lazy" onclick="window.open(this.src,'_blank')"></div>` : ""}
   <div class="post-actions">
     <button class="post-action${liked ? ' liked' : ''}" onclick="togglePostLike('${post.id}')">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="${liked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
@@ -3927,7 +4027,13 @@ async function loadStats() {
     if (res.ok) {
       const stats = await res.json();
       const el = document.getElementById("visitor-count");
-      if (el) el.textContent = `${stats.registeredUsers} users · ${stats.totalVisitors} visits`;
+      const u = stats.registeredUsers, v = stats.totalVisitors, m = stats.totalMeets || 0, p = stats.totalPosts || 0;
+      let parts = [];
+      if (u > 0) parts.push(`${u} user${u !== 1 ? "s" : ""}`);
+      if (p > 0) parts.push(`${p} post${p !== 1 ? "s" : ""}`);
+      if (m > 0) parts.push(`${m} meet${m !== 1 ? "s" : ""}`);
+      if (v > 0) parts.push(`${v} visit${v !== 1 ? "s" : ""}`);
+      if (el) el.textContent = parts.join(" · ");
     }
   } catch {}
 }
@@ -4026,22 +4132,47 @@ function loadGlobalFeed() {
 }
 
 // Quick post
+let pendingPostImage = null;
+
 $("#quick-post-btn").addEventListener("click", () => {
   const input = $("#quick-post-input");
   const text = input.value.trim();
-  if (!text || !socket) return;
-  socket.emit("create-post", { text });
+  if (!text && !pendingPostImage) return;
+  if (!socket) return;
+  socket.emit("create-post", { text, image: pendingPostImage });
   input.value = "";
   input.style.height = "auto";
+  pendingPostImage = null;
+  $("#quick-post-preview").style.display = "none";
+  $("#quick-post-preview").innerHTML = "";
 });
 $("#quick-post-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#quick-post-btn").click(); }
 });
-// Auto-resize textarea
 $("#quick-post-input").addEventListener("input", function() {
   this.style.height = "auto";
   this.style.height = Math.min(this.scrollHeight, 80) + "px";
 });
+
+// Image upload for posts
+$("#quick-post-img-btn").addEventListener("click", () => {
+  $("#quick-post-file").click();
+});
+$("#quick-post-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  const dataUrl = await resizeBanner(file); // reuse resizer (800px max)
+  pendingPostImage = dataUrl;
+  const preview = $("#quick-post-preview");
+  preview.style.display = "";
+  preview.innerHTML = `<img src="${dataUrl}" alt=""><button class="quick-post-preview-close" onclick="clearPostImage()">&times;</button>`;
+  e.target.value = ""; // reset file input
+});
+
+window.clearPostImage = function() {
+  pendingPostImage = null;
+  $("#quick-post-preview").style.display = "none";
+  $("#quick-post-preview").innerHTML = "";
+};
 
 // Notifications
 $("#notif-btn").addEventListener("click", (e) => {
@@ -4257,6 +4388,7 @@ function showCallLinkBanner(target) {
 $("#accept-btn").addEventListener("click", async () => {
   incomingOverlay.classList.remove("active");
   stopRingtone(); stopFlashTitle();
+  if (!currentRemote || !currentCallId) return;
   setupCallUI(currentRemote.name, currentRemote.avatar, "Connecting...");
   showScreen("call-screen");
   await startCamera();

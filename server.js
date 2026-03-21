@@ -576,7 +576,7 @@ async function dbSetProfile(name, profile) {
 
 // ─── Posts ───────────────────────────────────────────────────────────────────
 
-async function dbCreatePost(author, text, parentId = null) {
+async function dbCreatePost(author, text, parentId = null, image = null) {
   const id = uuidv4().slice(0, 12);
   const key = author.toLowerCase().trim();
   const now = Date.now();
@@ -587,11 +587,13 @@ async function dbCreatePost(author, text, parentId = null) {
     if (parent) rootId = parent.rootId || parent.id;
   }
 
-  const post = { id, author: key, text, parentId, rootId, likeCount: 0, replyCount: 0, createdAt: now };
+  const post = { id, author: key, text, parentId, rootId, image: image || null, likeCount: 0, replyCount: 0, createdAt: now };
 
   if (supabase) {
     try {
-      await supabase.from("posts").insert({ id, author: key, text, parent_id: parentId, root_id: rootId, like_count: 0, reply_count: 0, created_at: new Date(now).toISOString() });
+      const row = { id, author: key, text, parent_id: parentId, root_id: rootId, like_count: 0, reply_count: 0, created_at: new Date(now).toISOString() };
+      if (image) row.image = image;
+      await supabase.from("posts").insert(row);
       if (parentId) {
         await supabase.rpc("increment_post_reply_count", { pid: parentId }).catch(() => {
           supabase.from("posts").update({ reply_count: supabase.raw ? undefined : 1 }).eq("id", parentId); // fallback
@@ -615,7 +617,7 @@ async function dbGetPost(postId) {
   if (supabase) {
     try {
       const { data } = await supabase.from("posts").select("*").eq("id", postId).single();
-      if (data) return { id: data.id, author: data.author, text: data.text, parentId: data.parent_id, rootId: data.root_id, likeCount: data.like_count || 0, replyCount: data.reply_count || 0, createdAt: new Date(data.created_at).getTime() };
+      if (data) return { id: data.id, author: data.author, text: data.text, parentId: data.parent_id, rootId: data.root_id, image: data.image || null, likeCount: data.like_count || 0, replyCount: data.reply_count || 0, createdAt: new Date(data.created_at).getTime() };
     } catch {}
     return null;
   }
@@ -629,7 +631,7 @@ async function dbGetUserPosts(author, limit = 20, offset = 0) {
   if (supabase) {
     try {
       const { data, count } = await supabase.from("posts").select("*", { count: "exact" }).eq("author", key).is("parent_id", null).order("created_at", { ascending: false }).range(offset, offset + limit - 1);
-      const posts = (data || []).map(d => ({ id: d.id, author: d.author, text: d.text, parentId: d.parent_id, rootId: d.root_id, likeCount: d.like_count || 0, replyCount: d.reply_count || 0, createdAt: new Date(d.created_at).getTime() }));
+      const posts = (data || []).map(d => ({ id: d.id, author: d.author, text: d.text, parentId: d.parent_id, rootId: d.root_id, image: d.image || null, likeCount: d.like_count || 0, replyCount: d.reply_count || 0, createdAt: new Date(d.created_at).getTime() }));
       return { posts, total: count || 0 };
     } catch (e) { console.warn("Posts read error:", e.message); }
     return { posts: [], total: 0 };
@@ -643,8 +645,9 @@ async function dbGetUserPosts(author, limit = 20, offset = 0) {
 async function dbGetThread(rootId) {
   if (supabase) {
     try {
-      const { data } = await supabase.from("posts").select("*").or(`id.eq.${rootId},root_id.eq.${rootId}`).order("created_at", { ascending: true });
-      return (data || []).map(d => ({ id: d.id, author: d.author, text: d.text, parentId: d.parent_id, rootId: d.root_id, likeCount: d.like_count || 0, replyCount: d.reply_count || 0, createdAt: new Date(d.created_at).getTime() }));
+      const safeId = rootId.replace(/[^a-zA-Z0-9_-]/g, "");
+      const { data } = await supabase.from("posts").select("*").or(`id.eq.${safeId},root_id.eq.${safeId}`).order("created_at", { ascending: true });
+      return (data || []).map(d => ({ id: d.id, author: d.author, text: d.text, parentId: d.parent_id, rootId: d.root_id, image: d.image || null, likeCount: d.like_count || 0, replyCount: d.reply_count || 0, createdAt: new Date(d.created_at).getTime() }));
     } catch (e) { console.warn("Thread read error:", e.message); }
     return [];
   }
@@ -749,7 +752,7 @@ async function dbGetGlobalFeed(limit = 30) {
   if (supabase) {
     try {
       const { data } = await supabase.from("posts").select("*").is("parent_id", null).order("created_at", { ascending: false }).limit(limit);
-      return (data || []).map(d => ({ id: d.id, author: d.author, text: d.text, parentId: d.parent_id, rootId: d.root_id, likeCount: d.like_count || 0, replyCount: d.reply_count || 0, createdAt: new Date(d.created_at).getTime() }));
+      return (data || []).map(d => ({ id: d.id, author: d.author, text: d.text, parentId: d.parent_id, rootId: d.root_id, image: d.image || null, likeCount: d.like_count || 0, replyCount: d.reply_count || 0, createdAt: new Date(d.created_at).getTime() }));
     } catch (e) { console.warn("Global feed error:", e.message); }
     return [];
   }
@@ -1631,14 +1634,15 @@ io.on("connection", (socket) => {
 
   // ── Posts & Profiles ──────────────────────────────────────────────────────
 
-  socket.on("create-post", async ({ text, parentId }) => {
+  socket.on("create-post", async ({ text, parentId, image }) => {
     if (!rateLimit(socket, "post", 5, 60_000)) return;
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
     if (!userData.xUsername && !userData.walletAddress) { socket.emit("post-error", { message: "Verified account required to post" }); return; }
     const trimmed = (text || "").trim().slice(0, 500);
-    if (!trimmed) return;
-    const post = await dbCreatePost(userData.name, trimmed, parentId || null);
+    if (!trimmed && !image) return;
+    const safeImage = (image && typeof image === "string" && image.startsWith("data:image/") && image.length <= 500_000) ? image : null;
+    const post = await dbCreatePost(userData.name, trimmed || "", parentId || null, safeImage);
     post.authorName = userData.name;
     post.authorAvatar = userData.avatar || null;
     post.authorXUsername = userData.xUsername || null;
@@ -1678,10 +1682,13 @@ io.on("connection", (socket) => {
   socket.on("get-user-posts", async ({ username, limit, offset }) => {
     if (!username || typeof username !== "string") return;
     const result = await dbGetUserPosts(username, limit || 20, offset || 0);
-    // Enrich with author info
     const userData = socket.userId ? onlineUsers.get(socket.userId) : null;
     const myNameLower = userData ? userData.name.toLowerCase() : "";
+    // Get author avatar once for all posts (same author)
+    const authorAvatar = await dbGetAvatar(username) || null;
     for (const post of result.posts) {
+      post.authorName = username;
+      post.authorAvatar = authorAvatar;
       const likers = await dbGetPostLikes(post.id);
       post.likers = likers;
       post.liked = myNameLower ? likers.includes(myNameLower) : false;
@@ -1692,7 +1699,11 @@ io.on("connection", (socket) => {
   socket.on("get-thread", async ({ postId }) => {
     if (!postId) return;
     const thread = await dbGetThread(postId);
+    const avatarCache = {};
     for (const post of thread) {
+      post.authorName = post.author;
+      if (!avatarCache[post.author]) avatarCache[post.author] = await dbGetAvatar(post.author) || null;
+      post.authorAvatar = avatarCache[post.author];
       post.likers = await dbGetPostLikes(post.id);
     }
     socket.emit("thread", { postId, posts: thread });
@@ -1705,7 +1716,7 @@ io.on("connection", (socket) => {
     for (const post of posts) {
       const likers = await dbGetPostLikes(post.id);
       post.likers = likers;
-      post.liked = likers.includes(myNameLower);
+      post.liked = myNameLower ? likers.includes(myNameLower) : false;
       // Enrich with author avatar/name from directory
       post.authorAvatar = await dbGetAvatar(post.author) || null;
       post.authorName = post.author;
@@ -1914,21 +1925,19 @@ io.on("connection", (socket) => {
 
 // ─── Directory & stats API ────────────────────────────────────────────────────
 
-app.get("/api/directory", async (req, res) => {
+async function getFullDirectory() {
   const dir = await dbGetDirectory();
-  // Merge in any verified users not yet in directory (from x_profiles, wallet_addresses)
   const dirNames = new Set(dir.map(d => (d.name || "").toLowerCase()));
-  // Add currently online verified users
+  // Merge online verified users
   for (const [, data] of onlineUsers) {
     if (data.disconnectedAt) continue;
     if (!data.xUsername && !data.walletAddress) continue;
     if (dirNames.has(data.name.toLowerCase())) continue;
     dir.push({ name: data.name, xUsername: data.xUsername || null, walletAddress: data.walletAddress || null, avatar: data.avatar || null, lastSeen: Date.now() });
     dirNames.add(data.name.toLowerCase());
-    // Backfill to directory DB
     dbAddToDirectory(data.name, { displayName: data.name, xUsername: data.xUsername, walletAddress: data.walletAddress, avatar: data.avatar });
   }
-  // Also pull from x_profiles for users who authenticated via X before directory existed
+  // Backfill from x_profiles (users who authenticated before directory existed)
   if (supabase) {
     try {
       const { data: xProfiles } = await supabase.from("x_profiles").select("username, display_name, avatar");
@@ -1937,21 +1946,44 @@ app.get("/api/directory", async (req, res) => {
           const name = xp.display_name || xp.username;
           if (dirNames.has(name.toLowerCase())) continue;
           const wallet = await dbGetWallet(name);
-          const entry = { name, xUsername: xp.username, walletAddress: wallet || null, avatar: xp.avatar || null, lastSeen: null };
-          dir.push(entry);
+          dir.push({ name, xUsername: xp.username, walletAddress: wallet || null, avatar: xp.avatar || null, lastSeen: null });
           dirNames.add(name.toLowerCase());
-          // Backfill
           dbAddToDirectory(name, { displayName: name, xUsername: xp.username, walletAddress: wallet, avatar: xp.avatar });
         }
       }
     } catch {}
   }
-  res.json(dir);
+  return dir;
+}
+
+app.get("/api/directory", async (req, res) => {
+  res.json(await getFullDirectory());
 });
 
 app.get("/api/stats", async (req, res) => {
-  const dirSize = (await dbGetDirectory()).length;
-  res.json({ totalVisitors: totalVisitors, onlineUsers: onlineUsers.size, registeredUsers: dirSize });
+  const dirSize = (await getFullDirectory()).length;
+  // Aggregate total meets and posts
+  let totalMeets = 0, totalPosts = 0;
+  if (supabase) {
+    try {
+      const { data: meetsData } = await supabase.from("call_stats").select("total_meets");
+      if (meetsData) totalMeets = meetsData.reduce((sum, r) => sum + (r.total_meets || 0), 0);
+    } catch {}
+    try {
+      const { count } = await supabase.from("posts").select("id", { count: "exact", head: true }).is("parent_id", null);
+      totalPosts = count || 0;
+    } catch {}
+  } else {
+    // JSON fallback
+    jsonGet("stats", "_probe"); // trigger load
+    const store = jsonStores["stats"] || {};
+    for (const val of Object.values(store)) {
+      try { const s = JSON.parse(val); totalMeets += s.totalMeets || 0; } catch {}
+    }
+    const postsStored = jsonGet("posts", "_all");
+    try { const posts = postsStored ? JSON.parse(postsStored) : []; totalPosts = posts.filter(p => !p.parentId).length; } catch {}
+  }
+  res.json({ totalVisitors: totalVisitors, onlineUsers: onlineUsers.size, registeredUsers: dirSize, totalMeets, totalPosts });
 });
 
 app.use(express.static(path.join(__dirname, "public")));
