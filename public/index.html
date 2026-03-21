@@ -303,11 +303,12 @@
     }
     .quick-post-img-btn:hover { color: var(--text); }
     .quick-post-btn {
-      padding: 6px 16px; background: var(--red); border: none;
-      color: #fff; font-size: 13px; border-radius: 10px; cursor: pointer;
-      font-family: var(--font-body); font-weight: 600; white-space: nowrap;
+      padding: 5px 14px; background: none; border: 1px solid var(--border);
+      color: var(--text-muted); font-size: 12px; border-radius: 8px; cursor: pointer;
+      font-family: var(--font-mono); font-weight: 400; white-space: nowrap;
+      transition: all 0.15s;
     }
-    .quick-post-btn:hover { opacity: 0.9; }
+    .quick-post-btn:hover { border-color: var(--red); color: var(--text); }
 
     /* Tabs */
     .tab-bar {
@@ -445,12 +446,12 @@
     }
     .post-compose-input:focus { border-color: rgba(232,69,60,0.4); }
     .post-compose-btn {
-      padding: 8px 16px; background: var(--red); border: none;
-      color: #fff; font-size: 13px; border-radius: 8px; cursor: pointer;
-      font-family: var(--font-body); font-weight: 600;
-      align-self: flex-end;
+      padding: 5px 14px; background: none; border: 1px solid var(--border);
+      color: var(--text-muted); font-size: 12px; border-radius: 8px; cursor: pointer;
+      font-family: var(--font-mono); font-weight: 400;
+      align-self: flex-end; transition: all 0.15s;
     }
-    .post-compose-btn:hover { opacity: 0.9; }
+    .post-compose-btn:hover { border-color: var(--red); color: var(--text); }
     .post-reply-indicator {
       font-size: 11px; color: var(--text-muted); margin-bottom: 4px;
       font-family: var(--font-mono);
@@ -565,14 +566,13 @@
     }
     .logo-sub {
       font-size: 12px; color: var(--text-muted);
-      letter-spacing: 1.5px; text-transform: uppercase; margin-top: 2px;
+      letter-spacing: 1.5px; margin-top: 2px;
     }
     .timer-badge {
       font-family: var(--font-mono);
-      font-size: 12px; font-weight: 700; color: var(--red);
-      background: rgba(232,69,60,0.1);
-      border: 1px solid rgba(232,69,60,0.2);
-      border-radius: 20px; padding: 6px 12px;
+      font-size: 10px; font-weight: 400; color: #555;
+      background: none; border: none;
+      padding: 0;
     }
 
     .info-bar {
@@ -1247,12 +1247,12 @@
     }
     .chat-input::placeholder { color: #444; }
     .chat-send {
-      padding: 8px 14px; background: var(--red); border: none;
-      border-radius: 10px; color: #fff; font-size: 13px; font-weight: 600;
-      font-family: var(--font-body); cursor: pointer;
-      transition: transform 0.15s;
+      padding: 6px 12px; background: none; border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text-muted); font-size: 12px; font-weight: 400;
+      font-family: var(--font-mono); cursor: pointer;
+      transition: all 0.15s;
     }
-    .chat-send:hover { transform: scale(1.05); }
+    .chat-send:hover { border-color: var(--red); color: var(--text); }
 
     /* Stream chat overlay (positioned inside stream screen) */
     .stream-chat {
@@ -1601,7 +1601,7 @@
         </div>
         <div>
           <div class="logo-title">minimeet.cc</div>
-          <div class="logo-sub">mini meets</div>
+          <div class="logo-sub">minute meetings and socials</div>
         </div>
       </div>
       <div class="timer-badge">⏱ 1 min max</div>
