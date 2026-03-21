@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OneMinute — 60-Second Video Calls</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🕐</text></svg>">
+  <title>minimeet.cc</title>
+  <link rel="icon" href="data:image/svg+xml,<svg width='120' height='140' viewBox='0 0 120 140' xmlns='http://www.w3.org/2000/svg'><rect x='0' y='0' width='120' height='140' rx='12' fill='%230A0A0F'/><text x='60' y='56' text-anchor='middle' font-family='Helvetica Neue,Arial,sans-serif' font-size='40' font-weight='800' fill='%23FFFFFF' letter-spacing='1'>MM</text><line x1='25' y1='78' x2='95' y2='68' stroke='%23E8453C' stroke-width='3' stroke-linecap='round'/><text x='60' y='116' text-anchor='middle' font-family='Helvetica Neue,Arial,sans-serif' font-size='40' font-weight='800' fill='%23FFFFFF' letter-spacing='1'>CC</text></svg>">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
   <style>
@@ -61,36 +61,42 @@
     /* ── Login Screen ─────────────────────────────────── */
     #login-screen {
       align-items: center; justify-content: center;
-      flex-direction: column; gap: 20px;
+      flex-direction: column; gap: 16px;
       animation: fadeIn 0.5s ease;
+      padding: 20px;
     }
     .login-logo {
-      display: flex; align-items: center; gap: 14px; margin-bottom: 8px;
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+      margin-bottom: 4px;
     }
     .login-logo-icon {
-      width: 56px; height: 56px; border-radius: 16px;
-      background: rgba(232,69,60,0.12);
-      border: 1px solid rgba(232,69,60,0.25);
       display: flex; align-items: center; justify-content: center;
     }
     .login-title {
-      font-family: var(--font-mono); font-size: 32px; font-weight: 700;
+      font-family: var(--font-mono); font-size: 30px; font-weight: 700;
+      text-align: center;
     }
     .login-subtitle {
-      font-size: 13px; color: var(--text-muted);
-      letter-spacing: 2px; text-transform: uppercase;
+      font-size: 14px; color: #777;
+      max-width: 300px; text-align: center; line-height: 1.5;
+      margin-top: -6px;
+    }
+
+    /* Avatar picker + name input row */
+    .login-form-row {
+      display: flex; align-items: center; gap: 12px; width: 320px;
     }
 
     /* Avatar picker */
     .avatar-picker {
-      position: relative; cursor: pointer; margin-bottom: 4px;
+      position: relative; cursor: pointer;
     }
     .avatar-picker-circle {
-      width: 88px; height: 88px; border-radius: 50%;
+      width: 52px; height: 52px; border-radius: 50%;
       background: var(--surface);
       border: 2px dashed rgba(255,255,255,0.15);
       display: flex; align-items: center; justify-content: center;
-      flex-direction: column; gap: 4px;
+      flex-direction: column; gap: 2px;
       transition: border-color 0.2s, background 0.2s;
       overflow: hidden;
       background-size: cover; background-position: center;
@@ -106,8 +112,7 @@
       border-color: rgba(232,69,60,0.5);
     }
     .avatar-picker-label {
-      font-size: 10px; color: var(--text-muted);
-      text-transform: uppercase; letter-spacing: 1px;
+      display: none;
     }
     .avatar-picker-overlay {
       position: absolute; inset: 0; border-radius: 50%;
@@ -118,7 +123,7 @@
     .avatar-picker input { display: none; }
 
     .login-input {
-      width: 320px; padding: 14px 18px;
+      flex: 1; width: auto; padding: 14px 18px;
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 14px; color: var(--text);
       font-size: 16px; font-family: var(--font-body);
@@ -129,7 +134,7 @@
     .login-input.error { border-color: var(--red); }
     .login-error {
       font-size: 13px; color: var(--red); max-width: 320px;
-      text-align: center; min-height: 18px;
+      text-align: center;
     }
     .login-btn {
       width: 320px; padding: 14px;
@@ -224,6 +229,11 @@
       font-family: var(--font-mono);
     }
     .my-name span { color: var(--green); font-weight: 700; }
+    .sign-out-link {
+      color: #555; text-decoration: none;
+      font-size: 11px; transition: color 0.2s;
+    }
+    .sign-out-link:hover { color: var(--red); }
     .info-right { display: flex; align-items: center; gap: 12px; }
     .online-count {
       font-size: 12px; color: var(--text-muted);
@@ -245,6 +255,49 @@
     }
     .invite-btn:hover { background: rgba(232,168,60,0.2); }
 
+    /* Call-link pending banner */
+    .call-link-banner {
+      display: none;
+      margin-bottom: 16px; padding: 16px 18px;
+      background: rgba(232,69,60,0.08);
+      border: 1px solid rgba(232,69,60,0.2);
+      border-radius: 14px;
+      animation: slideUp 0.4s ease;
+    }
+    .call-link-banner.active { display: block; }
+    .call-link-banner-top {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .call-link-banner-title {
+      font-family: var(--font-mono);
+      font-size: 13px; font-weight: 700; color: var(--red);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .call-link-banner-close {
+      background: none; border: none; color: #666;
+      cursor: pointer; font-size: 18px; padding: 0 4px;
+      transition: color 0.2s;
+    }
+    .call-link-banner-close:hover { color: var(--text); }
+    .call-link-banner-body {
+      font-size: 13px; color: #999; line-height: 1.5;
+    }
+    .call-link-banner-body strong { color: var(--text); }
+    .call-link-status {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-family: var(--font-mono); font-size: 11px;
+      padding: 2px 8px; border-radius: 6px;
+      margin-top: 6px;
+    }
+    .call-link-status.online { background: rgba(74,222,128,0.1); color: var(--green); }
+    .call-link-status.offline { background: rgba(255,255,255,0.05); color: #666; }
+    .call-link-status .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+    }
+    .call-link-status.online .dot { background: var(--green); }
+    .call-link-status.offline .dot { background: #666; animation: pulse 2s ease infinite; }
+
     .search-wrap { position: relative; margin-bottom: 16px; }
     .search-wrap svg {
       position: absolute; left: 14px; top: 50%;
@@ -261,6 +314,18 @@
       display: flex; flex-direction: column; gap: 2px;
       overflow-y: auto; flex: 1;
     }
+    .section-label {
+      font-family: var(--font-mono);
+      font-size: 10px; font-weight: 700;
+      color: #555; text-transform: uppercase;
+      letter-spacing: 1.5px;
+      padding: 12px 14px 4px;
+    }
+    .section-label.first { padding-top: 0; }
+    .section-divider {
+      height: 1px; background: var(--border);
+      margin: 8px 14px;
+    }
     .contact-card {
       display: flex; align-items: center; gap: 14px;
       padding: 12px 14px; border-radius: 14px;
@@ -268,6 +333,19 @@
       animation: slideUp 0.4s ease both;
     }
     .contact-card:hover { background: var(--surface-hover); transform: translateX(4px); }
+    .contact-card.offline-saved {
+      opacity: 0.45;
+    }
+    .contact-card.offline-saved:hover { transform: none; cursor: default; }
+    .save-btn {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: none; border: none;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: all 0.15s; flex-shrink: 0;
+      color: #444;
+    }
+    .save-btn:hover { color: #E8A83C; transform: scale(1.15); }
+    .save-btn.saved { color: #E8A83C; }
     .avatar {
       width: 44px; height: 44px; border-radius: 14px;
       display: flex; align-items: center; justify-content: center;
@@ -310,6 +388,35 @@
     }
     .my-stats-item { display: flex; align-items: center; gap: 3px; }
     .my-stats-item span { color: var(--text); font-weight: 700; }
+    /* Auto-Meet toggle */
+    .auto-meet-toggle {
+      display: flex; align-items: center; gap: 6px;
+      font-family: var(--font-mono); font-size: 11px;
+      color: var(--text-muted); cursor: pointer;
+      padding: 5px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: none;
+      transition: all 0.2s; white-space: nowrap;
+    }
+    .auto-meet-toggle:hover { background: var(--surface-hover); }
+    .auto-meet-toggle.active {
+      color: var(--green); border-color: rgba(74,222,128,0.3);
+      background: rgba(74,222,128,0.08);
+    }
+    .auto-meet-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #555; transition: background 0.2s;
+    }
+    .auto-meet-toggle.active .auto-meet-dot {
+      background: var(--green); animation: pulse 2s ease infinite;
+    }
+    .auto-meet-cooldown {
+      display: none; font-size: 9px; opacity: 0.7;
+      border-left: 1px solid rgba(255,255,255,0.1);
+      padding-left: 6px; margin-left: 2px;
+      cursor: pointer;
+    }
+    .auto-meet-toggle.active .auto-meet-cooldown { display: inline; }
+
     .call-btn {
       width: 36px; height: 36px; border-radius: 10px;
       background: rgba(74,222,128,0.1);
@@ -423,6 +530,32 @@
     #local-video {
       width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);
     }
+    .local-pfp-placeholder {
+      display: none;
+      position: absolute; inset: 0;
+      background: #1A1A24;
+      align-items: center; justify-content: center;
+      flex-direction: column; gap: 6px;
+    }
+    .local-pfp-placeholder.active { display: flex; }
+    .local-pfp-img {
+      width: 52px; height: 52px; border-radius: 50%;
+      background-size: cover; background-position: center;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .local-pfp-label {
+      font-family: var(--font-mono); font-size: 9px;
+      color: #666; text-transform: uppercase; letter-spacing: 1px;
+    }
+    /* Remote video-off overlay */
+    .remote-video-off {
+      display: none;
+      position: absolute; inset: 0; z-index: 1;
+      background: radial-gradient(ellipse at center, #15151F 0%, #0A0A0F 70%);
+      align-items: center; justify-content: center;
+      flex-direction: column; gap: 12px;
+    }
+    .remote-video-off.active { display: flex; }
     .you-label {
       position: absolute; bottom: 6px; left: 8px;
       font-size: 10px; font-weight: 700;
@@ -503,17 +636,410 @@
     /* Hidden file input for pfp change */
     .hidden-input { display: none; }
 
+    /* ── Stream Screen ─────────────────────────────────── */
+    #stream-screen {
+      position: relative; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: radial-gradient(ellipse at center, #15151F 0%, #0A0A0F 70%);
+      animation: fadeIn 0.3s ease;
+    }
+    .stream-video-area {
+      width: 100%; height: 100%; position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #stream-remote-video, #stream-local-video {
+      width: 100%; height: 100%; object-fit: cover;
+    }
+    #stream-remote-video { display: none; }
+    .stream-overlay {
+      position: absolute; top: 20px; left: 20px; z-index: 10;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .stream-live-badge {
+      font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+      color: #fff; background: var(--red);
+      padding: 4px 10px; border-radius: 8px;
+      display: flex; align-items: center; gap: 5px;
+      animation: pulse 2s ease infinite;
+    }
+    .stream-live-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: #fff; }
+    .stream-viewer-count {
+      font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+      color: #fff; background: rgba(0,0,0,0.6);
+      padding: 4px 10px; border-radius: 8px;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .stream-title-overlay {
+      position: absolute; bottom: 100px; left: 20px; z-index: 10;
+      font-family: var(--font-mono); font-size: 16px; font-weight: 700;
+      color: #fff; text-shadow: 0 2px 12px rgba(0,0,0,0.7);
+    }
+    .stream-streamer-info {
+      position: absolute; top: 20px; right: 20px; z-index: 10;
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(0,0,0,0.6); border-radius: 12px;
+      padding: 6px 12px;
+    }
+    .stream-streamer-pfp {
+      width: 28px; height: 28px; border-radius: 50%;
+      background-size: cover; background-position: center;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .stream-streamer-name {
+      font-size: 13px; font-weight: 600; color: #fff;
+    }
+    .stream-controls {
+      position: absolute; bottom: 36px;
+      display: flex; gap: 16px; align-items: center; z-index: 10;
+    }
+    /* Viewer list sidebar */
+    .stream-viewers-panel {
+      position: absolute; top: 60px; right: 20px; z-index: 10;
+      background: rgba(0,0,0,0.6); border-radius: 14px;
+      padding: 10px; max-height: 300px; overflow-y: auto;
+      min-width: 160px;
+    }
+    .stream-viewers-title {
+      font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+      color: #888; text-transform: uppercase; letter-spacing: 1px;
+      padding: 2px 6px 6px; border-bottom: 1px solid rgba(255,255,255,0.1);
+      margin-bottom: 6px;
+    }
+    .stream-viewer-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 4px 6px; border-radius: 8px;
+    }
+    .stream-viewer-pfp {
+      width: 24px; height: 24px; border-radius: 50%;
+      background-size: cover; background-position: center;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .stream-viewer-name { font-size: 12px; color: #ccc; }
+
+    /* Go Live button in contacts */
+    .go-live-btn {
+      font-size: 12px; color: var(--red);
+      background: rgba(232,69,60,0.1);
+      border: 1px solid rgba(232,69,60,0.2);
+      border-radius: 8px; padding: 5px 10px;
+      font-family: var(--font-mono); font-weight: 700;
+      cursor: pointer; transition: all 0.2s;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .go-live-btn:hover { background: rgba(232,69,60,0.2); }
+
+    /* Live badge on contact cards */
+    .live-badge {
+      font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+      color: #fff; background: var(--red);
+      padding: 1px 6px; border-radius: 6px;
+      display: inline-flex; align-items: center; gap: 3px;
+    }
+    .live-badge .dot { width: 5px; height: 5px; border-radius: 50%; background: #fff; animation: pulse 2s ease infinite; }
+    .watch-btn {
+      width: 36px; height: 36px; border-radius: 10px;
+      background: rgba(232,69,60,0.1);
+      border: 1px solid rgba(232,69,60,0.15);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--red); flex-shrink: 0;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .watch-btn:hover { background: rgba(232,69,60,0.2); transform: scale(1.08); }
+
+    /* ── Chat Panel ─────────────────────────────────────── */
+    .chat-panel {
+      display: none; flex-direction: column;
+      border-top: 1px solid var(--border);
+      max-height: 280px; min-height: 120px;
+    }
+    .chat-panel.active { display: flex; }
+    .chat-toggle {
+      font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+      color: var(--text-muted); background: none; border: none;
+      cursor: pointer; padding: 8px 0; text-align: left;
+      display: flex; align-items: center; gap: 6px;
+      transition: color 0.2s;
+    }
+    .chat-toggle:hover { color: var(--text); }
+    .chat-toggle .unread {
+      background: var(--red); color: #fff; font-size: 9px;
+      padding: 1px 5px; border-radius: 8px; min-width: 16px; text-align: center;
+    }
+    .chat-messages {
+      flex: 1; overflow-y: auto; padding: 4px 0;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .chat-msg {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 4px 8px; border-radius: 8px;
+      animation: slideUp 0.2s ease;
+    }
+    .chat-msg:hover { background: var(--surface); }
+    .chat-msg-pfp {
+      width: 22px; height: 22px; border-radius: 50%;
+      background-size: cover; background-position: center;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; margin-top: 2px;
+    }
+    .chat-msg-body { flex: 1; min-width: 0; }
+    .chat-msg-name {
+      font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+      color: var(--text); margin-right: 6px;
+    }
+    .chat-msg-time {
+      font-size: 10px; color: #555;
+    }
+    .chat-msg-text {
+      font-size: 13px; color: #ccc; word-break: break-word; line-height: 1.4;
+    }
+    .chat-input-row {
+      display: flex; gap: 8px; padding: 8px 0;
+    }
+    .chat-input {
+      flex: 1; padding: 8px 12px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; color: var(--text);
+      font-size: 13px; font-family: var(--font-body); outline: none;
+    }
+    .chat-input::placeholder { color: #444; }
+    .chat-send {
+      padding: 8px 14px; background: var(--red); border: none;
+      border-radius: 10px; color: #fff; font-size: 13px; font-weight: 600;
+      font-family: var(--font-body); cursor: pointer;
+      transition: transform 0.15s;
+    }
+    .chat-send:hover { transform: scale(1.05); }
+
+    /* Stream chat overlay (positioned inside stream screen) */
+    .stream-chat {
+      position: absolute; bottom: 100px; left: 20px; z-index: 10;
+      width: 320px; max-height: 300px;
+      background: rgba(0,0,0,0.6); border-radius: 14px;
+      display: flex; flex-direction: column; padding: 10px;
+      backdrop-filter: blur(8px);
+    }
+    .stream-chat .chat-messages { max-height: 200px; }
+    .stream-chat .chat-msg-text { color: #eee; }
+    .stream-chat .chat-input {
+      background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.15);
+    }
+
+    /* ── DM Panel ──────────────────────────────────────── */
+    .dm-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5); backdrop-filter: blur(4px);
+      z-index: 150; align-items: flex-end; justify-content: center;
+    }
+    .dm-overlay.active { display: flex; }
+    .dm-panel {
+      width: 100%; max-width: 500px; max-height: 70vh;
+      background: #16161F; border: 1px solid var(--border);
+      border-radius: 20px 20px 0 0; padding: 16px 20px;
+      display: flex; flex-direction: column;
+      animation: slideUp 0.3s ease;
+    }
+    .dm-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .dm-header-left { display: flex; align-items: center; gap: 10px; }
+    .dm-header-pfp {
+      width: 32px; height: 32px; border-radius: 50%;
+      background-size: cover; background-position: center;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .dm-header-name { font-size: 15px; font-weight: 600; }
+    .dm-close {
+      background: none; border: none; color: #666;
+      font-size: 22px; cursor: pointer; padding: 0 4px;
+      transition: color 0.2s;
+    }
+    .dm-close:hover { color: var(--text); }
+    .dm-messages {
+      flex: 1; overflow-y: auto; min-height: 120px; max-height: 40vh;
+      display: flex; flex-direction: column; gap: 6px;
+      padding: 4px 0;
+    }
+    .dm-empty {
+      text-align: center; color: #555; font-size: 13px; padding: 30px 0;
+    }
+    .dm-msg {
+      display: flex; flex-direction: column; gap: 1px;
+      max-width: 80%; padding: 8px 12px;
+      border-radius: 14px; font-size: 13px; line-height: 1.4;
+      word-break: break-word;
+    }
+    .dm-msg.sent {
+      align-self: flex-end;
+      background: var(--red); color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .dm-msg.received {
+      align-self: flex-start;
+      background: var(--surface); color: var(--text);
+      border-bottom-left-radius: 4px;
+    }
+    .dm-msg-time {
+      font-size: 9px; opacity: 0.6; margin-top: 2px;
+    }
+    .dm-msg.sent .dm-msg-time { text-align: right; }
+    .dm-input-row {
+      display: flex; gap: 8px; padding-top: 10px;
+      border-top: 1px solid var(--border); margin-top: 8px;
+    }
+    .dm-input {
+      flex: 1; padding: 10px 14px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; color: var(--text);
+      font-size: 14px; font-family: var(--font-body); outline: none;
+    }
+    .dm-input::placeholder { color: #444; }
+    .dm-send {
+      padding: 10px 16px; background: var(--red); border: none;
+      border-radius: 12px; color: #fff; font-size: 14px; font-weight: 600;
+      font-family: var(--font-body); cursor: pointer;
+    }
+    /* Poke button on contact cards */
+    .poke-btn {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: none; border: none;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: all 0.15s; flex-shrink: 0;
+      color: #444; font-size: 16px;
+    }
+    .poke-btn:hover { color: var(--amber); transform: scale(1.15); }
+    /* Poke notification */
+    .poke-toast {
+      display: flex; align-items: center; gap: 8px;
+    }
+    /* In-call chat button */
+    .call-chat-btn {
+      position: relative;
+    }
+    .call-chat-badge {
+      position: absolute; top: -4px; right: -4px;
+      background: var(--red); color: #fff; font-size: 9px;
+      min-width: 16px; height: 16px; border-radius: 8px;
+      display: none; align-items: center; justify-content: center;
+      font-family: var(--font-mono); font-weight: 700;
+    }
+    .call-chat-badge.active { display: flex; }
+
     /* ── Animations ───────────────────────────────────── */
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
     @keyframes ringPulse { 0% { transform: scale(1); opacity: 0.8; } 100% { transform: scale(2.5); opacity: 0; } }
     @keyframes timerPulse { 0%,100% { transform: translateX(-50%) scale(1); } 50% { transform: translateX(-50%) scale(1.05); } }
+
+    /* ── Mobile ───────────────────────────────────────── */
+    @media (max-width: 480px) {
+      /* Login */
+      .login-form-row { width: 280px; }
+      .login-btn, .x-login-btn, .login-divider { width: 280px; }
+      .login-title { font-size: 26px; }
+      .login-subtitle { font-size: 13px; }
+
+      /* Contacts header */
+      #contacts-screen { padding: 20px 12px; }
+      .header { flex-wrap: wrap; gap: 10px; }
+      .timer-badge { font-size: 10px; padding: 4px 8px; }
+
+      /* Info bar: wrap to two rows */
+      .info-bar { flex-wrap: wrap; gap: 8px; }
+      .my-info { order: 1; flex: 1 1 100%; }
+      .info-right { order: 2; flex: 1 1 100%; flex-wrap: wrap; gap: 6px; }
+      .auto-meet-toggle { font-size: 10px; padding: 4px 8px; }
+      .go-live-btn { font-size: 10px; padding: 4px 8px; }
+      .invite-btn { font-size: 10px; padding: 4px 8px; }
+      .online-count { font-size: 11px; }
+      .my-stats { font-size: 10px; }
+
+      /* Contact cards: compact buttons */
+      .contact-card { padding: 10px 10px; gap: 10px; }
+      .avatar { width: 38px; height: 38px; border-radius: 12px; }
+      .contact-name { font-size: 14px; }
+      .contact-status { font-size: 11px; }
+      .poke-btn { width: 28px; height: 28px; }
+      .save-btn { width: 28px; height: 28px; }
+      .call-btn { width: 32px; height: 32px; border-radius: 8px; }
+      .watch-btn { width: 32px; height: 32px; border-radius: 8px; }
+
+      /* Call screen */
+      .local-video-wrap { width: 100px; height: 134px; bottom: 100px; right: 12px; border-radius: 12px; }
+      .controls { bottom: 24px; gap: 12px; }
+      .ctrl-btn { width: 44px; height: 44px; border-radius: 14px; }
+      .end-btn { width: 52px; height: 52px; border-radius: 16px; }
+      .timer-wrap { top: 16px; }
+
+      /* Incoming call */
+      .incoming-card { padding: 28px 32px; }
+      .incoming-avatar { width: 64px; height: 64px; }
+      .incoming-name { font-size: 18px; }
+      .accept-btn, .decline-btn { width: 48px; height: 48px; border-radius: 14px; }
+
+      /* Stream */
+      .stream-chat { width: calc(100vw - 40px); max-width: 300px; bottom: 90px; left: 12px; }
+      .stream-controls { bottom: 24px; gap: 12px; }
+      .stream-viewers-panel { right: 12px; top: 50px; min-width: 140px; }
+      .stream-overlay { top: 14px; left: 12px; }
+
+      /* Chat panel */
+      .chat-panel { max-height: 200px; }
+      .chat-msg-pfp { width: 20px; height: 20px; }
+      .chat-msg-text { font-size: 12px; }
+      .chat-input { font-size: 12px; padding: 6px 10px; }
+      .chat-send { font-size: 12px; padding: 6px 10px; }
+
+      /* DM panel */
+      .dm-panel { padding: 12px 14px; }
+      .dm-input { font-size: 13px; padding: 8px 12px; }
+      .dm-send { font-size: 13px; padding: 8px 12px; }
+
+      /* Ended screen */
+      .ended-avatar { width: 64px; height: 64px; }
+      .ended-title { font-size: 20px; }
+      .ended-stats { padding: 12px 20px; gap: 24px; }
+      .stat-value { font-size: 18px; }
+      .recall-btn, .back-btn { font-size: 13px; padding: 10px 18px; }
+    }
+
+    /* Tiny screens (iPhone SE, etc.) */
+    @media (max-width: 360px) {
+      .login-form-row { width: 260px; }
+      .login-btn, .x-login-btn, .login-divider { width: 260px; }
+      .login-title { font-size: 24px; }
+      .contact-card { padding: 8px 8px; gap: 8px; }
+      .avatar { width: 34px; height: 34px; }
+      .poke-btn { display: none; } /* hide poke on very small screens */
+      .stream-chat { width: calc(100vw - 24px); left: 12px; }
+    }
   </style>
 </head>
 <body>
 
   <div id="toast" class="toast"></div>
+
+  <!-- ══════════════ DM OVERLAY ══════════════ -->
+  <div id="dm-overlay" class="dm-overlay">
+    <div class="dm-panel">
+      <div class="dm-header">
+        <div class="dm-header-left">
+          <div class="dm-header-pfp" id="dm-header-pfp"></div>
+          <span class="dm-header-name" id="dm-header-name"></span>
+        </div>
+        <button class="dm-close" id="dm-close">&times;</button>
+      </div>
+      <div class="dm-messages" id="dm-messages">
+        <div class="dm-empty">Send a message...</div>
+      </div>
+      <div class="dm-input-row">
+        <input type="text" class="dm-input" id="dm-input" placeholder="Type a message..." maxlength="500" />
+        <button class="dm-send" id="dm-send">Send</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Hidden file input for changing pfp from contacts screen -->
   <input type="file" id="pfp-change-input" class="hidden-input" accept="image/*" />
@@ -521,34 +1047,38 @@
   <!-- ══════════════ LOGIN SCREEN ══════════════ -->
   <div id="login-screen" class="screen active">
     <div class="login-logo">
-      <div class="login-logo-icon">
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#E8453C" stroke-width="2.5" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.362 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
-      </div>
-      <div>
-        <div class="login-title">OneMinute</div>
-        <div class="login-subtitle">Every second counts</div>
-      </div>
+      <svg width="60" height="70" viewBox="0 0 120 140" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="120" height="140" rx="12" fill="#0A0A0F" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+        <text x="60" y="56" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-size="40" font-weight="800" fill="#FFFFFF" letter-spacing="1">MM</text>
+        <line x1="25" y1="78" x2="95" y2="68" stroke="#E8453C" stroke-width="3" stroke-linecap="round"/>
+        <text x="60" y="116" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-size="40" font-weight="800" fill="#FFFFFF" letter-spacing="1">CC</text>
+      </svg>
+      <div class="login-title">minimeet.cc</div>
+      <div style="width:80px;height:2px;background:#E8453C;border-radius:1px;opacity:0.5;margin-top:-2px;"></div>
+      <div class="login-subtitle">no scheduling. 1 minute calls only.<br>easiest way to catch up or keep in touch.</div>
     </div>
 
-    <!-- Avatar Picker -->
-    <div class="avatar-picker" id="avatar-picker">
-      <div class="avatar-picker-circle" id="avatar-picker-circle">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="1.5" stroke-linecap="round" id="avatar-picker-icon">
-          <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/>
-          <circle cx="12" cy="7" r="4"/>
-        </svg>
-        <span class="avatar-picker-label" id="avatar-picker-label">Add photo</span>
+    <!-- Avatar + Name input on same row -->
+    <div class="login-form-row">
+      <div class="avatar-picker" id="avatar-picker">
+        <div class="avatar-picker-circle" id="avatar-picker-circle">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="1.5" stroke-linecap="round" id="avatar-picker-icon">
+            <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+          <span class="avatar-picker-label" id="avatar-picker-label">Add photo</span>
+        </div>
+        <div class="avatar-picker-overlay" id="avatar-picker-overlay">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round">
+            <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+        </div>
+        <input type="file" id="avatar-input" accept="image/*" />
       </div>
-      <div class="avatar-picker-overlay" id="avatar-picker-overlay">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round">
-          <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
-          <circle cx="12" cy="13" r="4"/>
-        </svg>
-      </div>
-      <input type="file" id="avatar-input" accept="image/*" />
+      <input type="text" id="name-input" class="login-input" placeholder="Enter your name..." maxlength="30" />
     </div>
 
-    <input type="text" id="name-input" class="login-input" placeholder="Enter your display name..." maxlength="30" />
     <div class="login-error" id="login-error"></div>
     <button id="join-btn" class="login-btn">Join as Guest</button>
     <div class="login-divider">or</div>
@@ -556,38 +1086,70 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
       Sign in with X
     </button>
+    <div style="margin-top:24px;font-size:12px;color:#444;">built by <a href="https://x.com/z0r0zzz" target="_blank" rel="noopener" style="color:#666;text-decoration:none;font-family:var(--font-mono);font-weight:700;">z0r0z</a> who hates calls so much</div>
   </div>
 
   <!-- ══════════════ CONTACTS SCREEN ══════════════ -->
   <div id="contacts-screen" class="screen">
     <div class="header">
       <div class="header-left">
-        <div class="logo-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#E8453C" stroke-width="2.5" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.362 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
+        <div class="logo-icon" style="background:none;border:none;padding:0;">
+          <svg width="30" height="35" viewBox="0 0 120 140" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0" y="0" width="120" height="140" rx="12" fill="#0A0A0F" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+            <text x="60" y="56" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-size="40" font-weight="800" fill="#FFFFFF" letter-spacing="1">MM</text>
+            <line x1="25" y1="78" x2="95" y2="68" stroke="#E8453C" stroke-width="3" stroke-linecap="round"/>
+            <text x="60" y="116" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-size="40" font-weight="800" fill="#FFFFFF" letter-spacing="1">CC</text>
+          </svg>
         </div>
         <div>
-          <div class="logo-title">OneMinute</div>
-          <div class="logo-sub">Every second counts</div>
+          <div class="logo-title">minimeet.cc</div>
+          <div class="logo-sub">mini meets</div>
         </div>
       </div>
-      <div class="timer-badge">⏱ 60s calls</div>
+      <div class="timer-badge">⏱ 1 min max</div>
     </div>
 
     <div class="info-bar">
       <div class="my-info">
         <div class="pfp-circle my-pfp" id="my-pfp" title="Change profile picture"></div>
-        <div class="my-name">Signed in as <span id="my-name-display"></span></div>
+        <div class="my-name">Signed in as <span id="my-name-display"></span> · <a href="#" id="sign-out-link" class="sign-out-link">Sign out</a></div>
       </div>
       <div class="info-right">
+        <button class="auto-meet-toggle" id="auto-meet-btn" title="Auto-call mutual contacts you haven't talked to recently">
+          <div class="auto-meet-dot"></div>
+          <span>Auto-Meet</span>
+          <span class="auto-meet-cooldown" id="auto-meet-cooldown"></span>
+        </button>
         <div class="my-stats" id="my-stats"></div>
         <div class="online-count">
           <div class="online-dot"></div>
           <span id="online-count-num">0</span> online
         </div>
         <button class="invite-btn" id="invite-btn">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-          Invite
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+          My Link
         </button>
+        <button class="go-live-btn" id="go-live-btn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>
+          Go Live
+        </button>
+      </div>
+    </div>
+
+    <!-- Call-link banner (shown when arriving via ?call=username) -->
+    <div class="call-link-banner" id="call-link-banner">
+      <div class="call-link-banner-top">
+        <div class="call-link-banner-title">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.362 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>
+          Auto-calling
+        </div>
+        <button class="call-link-banner-close" id="call-link-close">&times;</button>
+      </div>
+      <div class="call-link-banner-body" id="call-link-body">
+        Waiting to call <strong id="call-link-target">someone</strong>...
+        <div class="call-link-status offline" id="call-link-status">
+          <div class="dot"></div> Waiting for them to come online...
+        </div>
       </div>
     </div>
 
@@ -596,6 +1158,19 @@
       <input type="text" id="search-input" class="search-input" placeholder="Search online users..." />
     </div>
     <div id="contacts-list" class="contacts-list"></div>
+
+    <!-- Public Chat -->
+    <button class="chat-toggle" id="chat-toggle">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      Chat <span class="unread" id="chat-unread" style="display:none">0</span>
+    </button>
+    <div class="chat-panel" id="chat-panel">
+      <div class="chat-messages" id="chat-messages"></div>
+      <div class="chat-input-row">
+        <input type="text" class="chat-input" id="chat-input" placeholder="Say something..." maxlength="500" />
+        <button class="chat-send" id="chat-send">Send</button>
+      </div>
+    </div>
   </div>
 
   <!-- ══════════════ INCOMING CALL OVERLAY ══════════════ -->
@@ -630,6 +1205,13 @@
         <div class="remote-name" id="call-remote-name">Someone</div>
         <div class="call-status-label" id="call-status-label">Calling...</div>
       </div>
+      <div class="remote-video-off" id="remote-video-off">
+        <div class="remote-avatar" id="remote-off-avatar" style="background: #3C7EE8;">
+          <span class="remote-initials" id="remote-off-initials">??</span>
+        </div>
+        <div class="remote-name" id="remote-off-name">Someone</div>
+        <div class="call-status-label">Camera off</div>
+      </div>
     </div>
 
     <div class="timer-wrap" id="timer-wrap" style="display:none;">
@@ -647,6 +1229,7 @@
 
     <div class="local-video-wrap">
       <video id="local-video" autoplay playsinline muted></video>
+      <div class="local-pfp-placeholder" id="local-pfp-placeholder"></div>
       <span class="you-label">You</span>
     </div>
 
@@ -656,6 +1239,10 @@
       </button>
       <button class="ctrl-btn" id="video-btn" title="Toggle Camera">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      </button>
+      <button class="ctrl-btn call-chat-btn" id="call-chat-btn" title="Chat">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        <span class="call-chat-badge" id="call-chat-badge">0</span>
       </button>
       <button class="end-btn" id="end-call-btn" title="End Call">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M10.68 13.31a16 16 0 003.41 2.6l1.27-1.27a2 2 0 012.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0122 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.362 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 002.59 3.4z"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
@@ -685,24 +1272,76 @@
     </div>
   </div>
 
+  <!-- ══════════════ STREAM SCREEN ══════════════ -->
+  <div id="stream-screen" class="screen">
+    <div class="stream-video-area">
+      <video id="stream-local-video" autoplay playsinline muted></video>
+      <video id="stream-remote-video" autoplay playsinline></video>
+    </div>
+
+    <div class="stream-overlay">
+      <div class="stream-live-badge"><div class="dot"></div> LIVE</div>
+      <div class="stream-viewer-count" id="stream-viewer-count">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span id="stream-viewer-num">0</span>
+      </div>
+    </div>
+
+    <div class="stream-streamer-info" id="stream-streamer-info" style="display:none;">
+      <div class="stream-streamer-pfp" id="stream-streamer-pfp"></div>
+      <span class="stream-streamer-name" id="stream-streamer-name"></span>
+    </div>
+
+    <div class="stream-viewers-panel" id="stream-viewers-panel">
+      <div class="stream-viewers-title">Watching</div>
+      <div id="stream-viewers-list"></div>
+    </div>
+
+    <div class="stream-title-overlay" id="stream-title-overlay"></div>
+
+    <!-- Stream Chat -->
+    <div class="stream-chat" id="stream-chat">
+      <div class="chat-messages" id="stream-chat-messages"></div>
+      <div class="chat-input-row">
+        <input type="text" class="chat-input" id="stream-chat-input" placeholder="Chat..." maxlength="500" />
+        <button class="chat-send" id="stream-chat-send">Send</button>
+      </div>
+    </div>
+
+    <div class="stream-controls">
+      <button class="ctrl-btn" id="stream-mute-btn" title="Toggle Mic">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      </button>
+      <button class="ctrl-btn" id="stream-video-btn" title="Toggle Camera">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      </button>
+      <button class="end-btn" id="stream-end-btn" title="End Stream / Leave">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+
 <script>
 // ═══════════════════════════════════════════════════════════════════════════
-// OneMinute Client
+// minimeet.cc Client — Socket.IO + WebRTC
 // ═══════════════════════════════════════════════════════════════════════════
 
 const CALL_DURATION = 60;
 const AVATAR_SIZE = 128; // px, thumbnails stored at this resolution
 const AVATAR_QUALITY = 0.7;
 
-const ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun.relay.metered.ca:80" },
-  { urls: "turn:global.relay.metered.ca:80", username: "e8dd65b92baa3dfa2dc6c999", credential: "kMOANraj9+YOgJFr" },
-  { urls: "turn:global.relay.metered.ca:80?transport=tcp", username: "e8dd65b92baa3dfa2dc6c999", credential: "kMOANraj9+YOgJFr" },
-  { urls: "turn:global.relay.metered.ca:443", username: "e8dd65b92baa3dfa2dc6c999", credential: "kMOANraj9+YOgJFr" },
-  { urls: "turns:global.relay.metered.ca:443?transport=tcp", username: "e8dd65b92baa3dfa2dc6c999", credential: "kMOANraj9+YOgJFr" },
-];
+// TURN credentials fetched from server (short-lived, HMAC-based)
+let ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+
+async function fetchTurnCredentials() {
+  try {
+    const res = await fetch("/api/turn-credentials");
+    if (res.ok) {
+      const data = await res.json();
+      if (data.iceServers) ICE_SERVERS = data.iceServers;
+    }
+  } catch {}
+}
 
 const SERVER_URL = window.location.origin;
 const COLORS = ["#E8453C","#3C7EE8","#E8A83C","#3CE88A","#A83CE8","#E83C8A","#3CE8E8","#8AE83C"];
@@ -798,6 +1437,9 @@ let myName = "";
 let myAvatar = null;
 let myStats = null;
 let myXUsername = null;
+let myContacts = []; // lowercase names of saved contacts
+let callTarget = null; // username from ?call= param
+let callTargetAutoDialed = false;
 let users = [];
 let currentCallId = null;
 let currentRemote = null; // { userId, name, avatar }
@@ -808,6 +1450,15 @@ let callTimer = null;
 let timeLeft = CALL_DURATION;
 let isMuted = false;
 let isVideoOff = false;
+let autoMeetEnabled = false;
+let autoMeetCooldownHours = 24;
+
+// Stream state
+let currentStreamId = null;
+let isStreamer = false;
+let streamPeerConnections = new Map(); // viewerId -> RTCPeerConnection (streamer) or single PC (viewer)
+let streamViewerCount = 0;
+let streamLocalStream = null;
 
 const $ = (sel) => document.querySelector(sel);
 const incomingOverlay = $("#incoming-overlay");
@@ -886,7 +1537,7 @@ function formatTime(s) {
 
 // Returns avatar HTML: either a background-image or colored initials
 function avatarBg(avatar, color) {
-  if (avatar) return `background-image:url(${avatar});background-color:transparent;`;
+  if (avatar) return `background-image:url('${avatar.replace(/'/g, "\\'")}');background-color:transparent;`;
   return `background:${color};`;
 }
 
@@ -964,6 +1615,240 @@ async function handleIceCandidate(candidate) {
 }
 
 function closePeerConnection() { if (peerConnection) { peerConnection.close(); peerConnection = null; } }
+
+// ── Streaming ────────────────────────────────────────────────────────────
+
+async function startStream() {
+  try {
+    streamLocalStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    $("#stream-local-video").srcObject = streamLocalStream;
+    $("#stream-local-video").style.display = "block";
+    $("#stream-remote-video").style.display = "none";
+  } catch (e) {
+    showToast("Camera/mic access denied", "error");
+    return false;
+  }
+  isStreamer = true;
+  currentStreamId = null;
+  streamPeerConnections.clear();
+  streamViewerCount = 0;
+  // Hide streamer info (that's for viewers)
+  $("#stream-streamer-info").style.display = "none";
+  // Show mute/video controls for streamer
+  $("#stream-mute-btn").style.display = "";
+  $("#stream-video-btn").style.display = "";
+  socket.emit("start-stream", { title: `${myName}'s stream` });
+  showScreen("stream-screen");
+  updateStreamViewerCount(0);
+  return true;
+}
+
+function joinStream(streamId) {
+  isStreamer = false;
+  currentStreamId = streamId;
+  streamPeerConnections.clear();
+  // Viewer: show remote video, hide local
+  $("#stream-local-video").style.display = "none";
+  $("#stream-remote-video").style.display = "none"; // will show on track
+  // Hide mute/video controls for viewer
+  $("#stream-mute-btn").style.display = "none";
+  $("#stream-video-btn").style.display = "none";
+  socket.emit("join-stream", { streamId });
+  showScreen("stream-screen");
+}
+
+function leaveStream() {
+  if (isStreamer && currentStreamId) {
+    socket.emit("end-stream", { streamId: currentStreamId });
+  } else if (currentStreamId) {
+    socket.emit("leave-stream", { streamId: currentStreamId });
+  }
+  cleanupStream();
+  showScreen("contacts-screen");
+}
+
+function cleanupStream() {
+  for (const [, pc] of streamPeerConnections) { try { pc.close(); } catch {} }
+  streamPeerConnections.clear();
+  if (streamLocalStream) { streamLocalStream.getTracks().forEach(t => t.stop()); streamLocalStream = null; }
+  $("#stream-local-video").srcObject = null;
+  $("#stream-remote-video").srcObject = null;
+  currentStreamId = null;
+  isStreamer = false;
+  streamViewerCount = 0;
+}
+
+function updateStreamViewerCount(count) {
+  streamViewerCount = count;
+  $("#stream-viewer-num").textContent = count;
+}
+
+function renderStreamViewers(viewers) {
+  const list = $("#stream-viewers-list");
+  if (!viewers || viewers.length === 0) {
+    list.innerHTML = '<div style="font-size:11px;color:#666;padding:4px 6px;">No viewers yet</div>';
+    return;
+  }
+  list.innerHTML = viewers.map(v => {
+    const color = getColor(v.name);
+    const initials = getInitials(v.name);
+    const bg = v.avatar ? `background-image:url(${v.avatar})` : `background:${color}`;
+    const inner = v.avatar ? "" : `<span style="font-family:var(--font-mono);font-size:9px;font-weight:700;color:#fff">${initials}</span>`;
+    return `<div class="stream-viewer-item"><div class="stream-viewer-pfp" style="${bg}">${inner}</div><span class="stream-viewer-name">${escapeHtml(v.name)}</span></div>`;
+  }).join("");
+}
+
+// Streamer: create PeerConnection for a new viewer
+function createStreamPCForViewer(viewerId) {
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  if (streamLocalStream) streamLocalStream.getTracks().forEach(track => pc.addTrack(track, streamLocalStream));
+  pc.onicecandidate = (e) => {
+    if (e.candidate && currentStreamId) socket.emit("stream-ice-candidate", { streamId: currentStreamId, viewerId, candidate: e.candidate });
+  };
+  streamPeerConnections.set(viewerId, pc);
+  return pc;
+}
+
+async function sendStreamOffer(viewerId) {
+  const pc = createStreamPCForViewer(viewerId);
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.emit("stream-offer", { streamId: currentStreamId, viewerId, sdp: offer });
+}
+
+// Viewer: handle incoming offer from streamer
+async function handleStreamOffer(sdp) {
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  pc.ontrack = (event) => {
+    const rv = $("#stream-remote-video");
+    rv.srcObject = event.streams[0];
+    rv.style.display = "block";
+  };
+  pc.onicecandidate = (e) => {
+    if (e.candidate && currentStreamId) socket.emit("stream-ice-candidate", { streamId: currentStreamId, candidate: e.candidate });
+  };
+  streamPeerConnections.set("streamer", pc);
+  await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  socket.emit("stream-answer", { streamId: currentStreamId, sdp: answer });
+}
+
+// ── Chat ─────────────────────────────────────────────────────────────────
+
+let chatOpen = false;
+let chatUnread = 0;
+
+function formatChatTime(ts) {
+  const d = new Date(ts);
+  return d.getHours().toString().padStart(2, "0") + ":" + d.getMinutes().toString().padStart(2, "0");
+}
+
+function renderChatMsg(msg, container) {
+  const color = getColor(msg.name);
+  const initials = getInitials(msg.name);
+  const bg = msg.avatar ? `background-image:url(${msg.avatar})` : `background:${color}`;
+  const inner = msg.avatar ? "" : `<span style="font-family:var(--font-mono);font-size:8px;font-weight:700;color:#fff">${initials}</span>`;
+  const isMine = msg.userId === myUserId;
+
+  const el = document.createElement("div");
+  el.className = "chat-msg";
+  el.innerHTML = `
+    <div class="chat-msg-pfp" style="${bg}">${inner}</div>
+    <div class="chat-msg-body">
+      <span class="chat-msg-name" style="color:${color}">${isMine ? "You" : escapeHtml(msg.name)}</span>
+      <span class="chat-msg-time">${formatChatTime(msg.ts)}</span>
+      <div class="chat-msg-text">${escapeHtml(msg.text)}</div>
+    </div>`;
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function sendPublicChat() {
+  const input = $("#chat-input");
+  const text = input.value.trim();
+  if (!text || !socket) return;
+  socket.emit("chat-public", { text });
+  input.value = "";
+}
+
+function sendStreamChat() {
+  const input = $("#stream-chat-input");
+  const text = input.value.trim();
+  if (!text || !socket || !currentStreamId) return;
+  socket.emit("chat-stream", { streamId: currentStreamId, text });
+  input.value = "";
+}
+
+// ── DMs ──────────────────────────────────────────────────────────────────
+
+let dmTargetUserId = null;
+let dmTargetName = "";
+let dmMessages = new Map(); // peerId -> [messages]
+let callChatUnread = 0;
+
+function openDM(userId, name, avatar) {
+  dmTargetUserId = userId;
+  dmTargetName = name;
+  // Setup header
+  const pfp = $("#dm-header-pfp");
+  if (avatar) {
+    pfp.style.background = `url(${avatar}) center/cover`;
+    pfp.innerHTML = "";
+  } else {
+    const c = getColor(name);
+    pfp.style.background = c;
+    pfp.innerHTML = `<span style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:#fff">${getInitials(name)}</span>`;
+  }
+  $("#dm-header-name").textContent = name;
+  // Render existing messages
+  const msgs = dmMessages.get(userId) || [];
+  const container = $("#dm-messages");
+  container.innerHTML = msgs.length === 0 ? '<div class="dm-empty">Send a message...</div>' : "";
+  msgs.forEach(m => appendDMMsg(m, container));
+  container.scrollTop = container.scrollHeight;
+  // Show
+  $("#dm-overlay").classList.add("active");
+  $("#dm-input").focus();
+}
+
+function closeDM() {
+  $("#dm-overlay").classList.remove("active");
+  dmTargetUserId = null;
+}
+
+function appendDMMsg(msg, container) {
+  if (!container) container = $("#dm-messages");
+  // Clear empty placeholder
+  const empty = container.querySelector(".dm-empty");
+  if (empty) empty.remove();
+  const el = document.createElement("div");
+  el.className = `dm-msg ${msg.sent ? "sent" : "received"}`;
+  el.innerHTML = `<div>${escapeHtml(msg.text)}</div><div class="dm-msg-time">${formatChatTime(msg.ts)}</div>`;
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+}
+
+function sendDM() {
+  const input = $("#dm-input");
+  const text = input.value.trim();
+  if (!text || !socket || !dmTargetUserId) return;
+  socket.emit("chat-dm", { toUserId: dmTargetUserId, text });
+  input.value = "";
+}
+
+function pokeUser(userId, e) {
+  if (e) e.stopPropagation();
+  if (!socket) return;
+  socket.emit("poke", { toUserId: userId });
+  showToast("Poked!", "success", 1500);
+}
 
 // ── Timer ────────────────────────────────────────────────────────────────
 
@@ -1070,44 +1955,142 @@ $("#pfp-change-input").addEventListener("change", async (e) => {
 
 // ── Render Contacts ──────────────────────────────────────────────────────
 
+function isSaved(name) {
+  return myContacts.includes(name.toLowerCase().trim());
+}
+
+function toggleSaveContact(name, e) {
+  e.stopPropagation();
+  if (isSaved(name)) {
+    socket.emit("remove-contact", { contactName: name });
+  } else {
+    socket.emit("add-contact", { contactName: name });
+  }
+}
+
+function renderContactCard(user, i, isOffline) {
+  const color = getColor(user.name);
+  const initials = getInitials(user.name);
+  const bg = avatarBg(user.avatar, color);
+  const inner = avatarInner(user.avatar, initials, 13);
+  const badge = isOffline ? "" : pickupBadgeHTML(user.stats);
+  const handle = user.xUsername ? `<span class="x-handle">@${escapeHtml(user.xUsername)}</span>` : "";
+  const statsLine = user.stats && user.stats.received > 0
+    ? `${user.stats.accepted}/${user.stats.received} answered`
+    : isOffline ? "Offline" : "No calls yet";
+  const saved = isSaved(user.name);
+  const starSvg = saved
+    ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="#E8A83C" stroke="#E8A83C" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`
+    : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
+  const dotColor = isOffline ? "#555" : "#4ADE80";
+  const cardClass = isOffline ? "contact-card offline-saved" : "contact-card";
+  const onclick = isOffline ? "" : `onclick="callUser('${user.userId}','${user.name.replace(/'/g, "\\'")}', ${user.avatar ? "'" + user.avatar.replace(/'/g, "\\'") + "'" : "null"})"`;
+
+  return `
+    <div class="${cardClass}" style="animation-delay:${i * 0.03}s" ${onclick}>
+      <div class="avatar" style="${bg}">
+        ${inner}
+        <div class="status-dot" style="background:${dotColor}"></div>
+      </div>
+      <div class="contact-info">
+        <span class="contact-name">${escapeHtml(user.name)} ${badge}</span>
+        <span class="contact-status">${handle}${handle && statsLine ? " · " : ""}${statsLine}</span>
+      </div>
+      ${isOffline ? "" : `<button class="poke-btn" onclick="pokeUser('${user.userId}', event)" title="Poke">👋</button>`}
+      <button class="save-btn ${saved ? "saved" : ""}" onclick="toggleSaveContact('${user.name.replace(/'/g, "\\'")}', event)" title="${saved ? "Remove from contacts" : "Save to contacts"}">${starSvg}</button>
+      ${isOffline ? "" : `<button class="poke-btn" onclick="openDM('${user.userId}','${user.name.replace(/'/g, "\\'")}', ${user.avatar ? "'" + user.avatar.replace(/'/g, "\\'") + "'" : "null"}); event.stopPropagation();" title="Message" style="color:#888">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+      </button>`}
+      ${isOffline ? "" : `<div class="call-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      </div>`}
+    </div>`;
+}
+
+function renderStreamCard(user, i) {
+  const color = getColor(user.name);
+  const initials = getInitials(user.name);
+  const bg = avatarBg(user.avatar, color);
+  const inner = avatarInner(user.avatar, initials, 13);
+  const viewerCount = user.streaming ? user.streaming.viewerCount : 0;
+  const title = user.streaming ? user.streaming.title : "";
+  const streamId = user.streaming ? user.streaming.streamId : "";
+
+  return `
+    <div class="contact-card" style="animation-delay:${i * 0.03}s" onclick="joinStream('${streamId}')">
+      <div class="avatar" style="${bg}">
+        ${inner}
+        <div class="status-dot" style="background:var(--red)"></div>
+      </div>
+      <div class="contact-info">
+        <span class="contact-name">${escapeHtml(user.name)} <span class="live-badge"><span class="dot"></span> LIVE</span></span>
+        <span class="contact-status">${escapeHtml(title)} · ${viewerCount} watching</span>
+      </div>
+      <div class="watch-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>
+      </div>
+    </div>`;
+}
+
 function renderContacts(filter = "") {
   const list = $("#contacts-list");
-  const filtered = users
-    .filter(u => u.userId !== myUserId)
-    .filter(u => u.name.toLowerCase().includes(filter.toLowerCase()));
+  const filterLower = filter.toLowerCase();
 
-  if (filtered.length === 0) {
+  // Online users (excluding self)
+  const onlineOthers = users.filter(u => u.userId !== myUserId);
+
+  // Users who are streaming
+  const liveUsers = onlineOthers.filter(u => u.streaming && u.name.toLowerCase().includes(filterLower));
+  // Non-streaming users
+  const nonLiveOthers = onlineOthers.filter(u => !u.streaming);
+
+  // Saved contacts: split into online and offline
+  const savedOnline = nonLiveOthers.filter(u => isSaved(u.name) && u.name.toLowerCase().includes(filterLower));
+  const savedOfflineNames = myContacts.filter(name => {
+    if (!name.includes(filterLower)) return false;
+    return !onlineOthers.some(u => u.name.toLowerCase().trim() === name);
+  });
+  const savedOffline = savedOfflineNames.map(name => ({
+    name: name.charAt(0).toUpperCase() + name.slice(1),
+    avatar: null, stats: null, xUsername: null, userId: null,
+  }));
+
+  // Everyone else online (not saved, not streaming)
+  const everyoneElse = nonLiveOthers.filter(u => !isSaved(u.name) && u.name.toLowerCase().includes(filterLower));
+
+  const hasLive = liveUsers.length > 0;
+  const hasSaved = savedOnline.length > 0 || savedOffline.length > 0;
+  const hasOthers = everyoneElse.length > 0;
+
+  if (!hasLive && !hasSaved && !hasOthers) {
     list.innerHTML = `<div style="text-align:center;color:#666;padding:40px;font-size:14px;">
-      ${users.length <= 1 ? 'No other users online yet.<br>Share the invite link to call someone!' : 'No matches found.'}
+      ${users.length <= 1 ? 'No other users online yet.<br>Share your link to call someone!' : 'No matches found.'}
     </div>`;
     return;
   }
 
-  list.innerHTML = filtered.map((user, i) => {
-    const color = getColor(user.name);
-    const initials = getInitials(user.name);
-    const bg = avatarBg(user.avatar, color);
-    const inner = avatarInner(user.avatar, initials, 13);
-    const badge = pickupBadgeHTML(user.stats);
-    const handle = user.xUsername ? `<span class="x-handle">@${user.xUsername}</span>` : "";
-    const statsLine = user.stats && user.stats.received > 0
-      ? `${user.stats.accepted}/${user.stats.received} answered`
-      : "No calls yet";
-    return `
-      <div class="contact-card" style="animation-delay:${i * 0.05}s" onclick="callUser('${user.userId}','${user.name.replace(/'/g, "\\'")}', ${user.avatar ? "'" + user.avatar.replace(/'/g, "\\'") + "'" : "null"})">
-        <div class="avatar" style="${bg}">
-          ${inner}
-          <div class="status-dot" style="background:#4ADE80"></div>
-        </div>
-        <div class="contact-info">
-          <span class="contact-name">${user.name} ${badge}</span>
-          <span class="contact-status">${handle}${handle && statsLine ? " · " : ""}${statsLine}</span>
-        </div>
-        <div class="call-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-        </div>
-      </div>`;
-  }).join("");
+  let html = "";
+  let idx = 0;
+
+  if (hasLive) {
+    html += `<div class="section-label first">Live Now</div>`;
+    liveUsers.forEach(u => { html += renderStreamCard(u, idx++); });
+  }
+
+  if (hasSaved) {
+    if (hasLive) html += `<div class="section-divider"></div>`;
+    html += `<div class="section-label ${hasLive ? "" : "first"}">My Contacts</div>`;
+    savedOnline.forEach(u => { html += renderContactCard(u, idx++, false); });
+    savedOffline.forEach(u => { html += renderContactCard(u, idx++, true); });
+  }
+
+  if (hasOthers) {
+    if (hasSaved || hasLive) html += `<div class="section-divider"></div>`;
+    html += `<div class="section-label ${!hasSaved && !hasLive ? "first" : ""}">Everyone Online</div>`;
+    everyoneElse.forEach(u => { html += renderContactCard(u, idx++, false); });
+  }
+
+  list.innerHTML = html;
 }
 
 // ── Call UI ──────────────────────────────────────────────────────────────
@@ -1128,6 +2111,33 @@ function setupCallUI(name, avatar, status) {
     ri.style.display = "";
     ri.textContent = initials;
   }
+
+  // Setup remote video-off overlay (same avatar)
+  const roa = $("#remote-off-avatar");
+  const roi = $("#remote-off-initials");
+  if (avatar) {
+    roa.style.backgroundImage = `url(${avatar})`;
+    roa.style.backgroundColor = "transparent";
+    roi.style.display = "none";
+  } else {
+    roa.style.backgroundImage = "";
+    roa.style.backgroundColor = color;
+    roi.style.display = "";
+    roi.textContent = initials;
+  }
+  $("#remote-off-name").textContent = name;
+  $("#remote-video-off").classList.remove("active");
+
+  // Setup local pfp placeholder
+  const localPfp = $("#local-pfp-placeholder");
+  const myColor = getColor(myName);
+  const myInitials = getInitials(myName);
+  if (myAvatar) {
+    localPfp.innerHTML = `<div class="local-pfp-img" style="background-image:url(${myAvatar})"></div><div class="local-pfp-label">Camera off</div>`;
+  } else {
+    localPfp.innerHTML = `<div class="local-pfp-img" style="background:${myColor}"><span style="font-family:var(--font-mono);font-size:16px;font-weight:700;color:#fff">${myInitials}</span></div><div class="local-pfp-label">Camera off</div>`;
+  }
+  localPfp.classList.remove("active");
 
   $("#call-remote-name").textContent = name;
   $("#call-status-label").textContent = status;
@@ -1164,6 +2174,9 @@ function setupEndedUI(name, avatar, reason, duration) {
 async function callUser(userId, name, avatar) {
   currentRemote = { userId, name, avatar: avatar || null };
   isCaller = true;
+  // Clear call-link state
+  if (callTarget) { sessionStorage.removeItem("om_callTarget"); callTarget = null; }
+  $("#call-link-banner").classList.remove("active");
   setupCallUI(name, avatar, "Calling...");
   showScreen("call-screen");
   await startCamera();
@@ -1181,6 +2194,11 @@ function endCurrentCall() {
 function cleanup() {
   stopTimer(); stopCamera(); closePeerConnection(); stopRingtone(); stopFlashTitle();
   currentCallId = null; isCaller = false;
+  callChatUnread = 0;
+  $("#call-chat-badge").classList.remove("active");
+  $("#local-pfp-placeholder").classList.remove("active");
+  $("#remote-video-off").classList.remove("active");
+  closeDM();
 }
 
 // ── Socket.IO ────────────────────────────────────────────────────────────
@@ -1192,24 +2210,25 @@ function connectSocket() {
   });
 
   socket.on("connect", () => {
-    const savedUserId = sessionStorage.getItem("om_userId");
-    const savedName = sessionStorage.getItem("om_name");
-    const savedX = sessionStorage.getItem("om_xUsername") || myXUsername || null;
+    const savedUserId = localStorage.getItem("om_userId");
+    const savedName = localStorage.getItem("om_name");
+    const savedX = localStorage.getItem("om_xUsername") || myXUsername || null;
     if (savedUserId && savedName) {
-      socket.emit("register", { name: savedName, reconnectUserId: savedUserId, avatar: myAvatar, xUsername: savedX });
-    } else {
-      socket.emit("register", { name: myName, avatar: myAvatar, xUsername: myXUsername });
+      socket.emit("register", { name: savedName, reconnectUserId: savedUserId, avatar: myAvatar, xUsername: savedX, sessionToken: localStorage.getItem("om_sessionToken") });
+    } else if (myName) {
+      socket.emit("register", { name: myName, avatar: myAvatar, xUsername: myXUsername, sessionToken: localStorage.getItem("om_sessionToken") });
     }
   });
 
-  socket.on("registered", ({ userId, name, reconnected, avatar: serverAvatar, stats, xUsername }) => {
+  socket.on("registered", ({ userId, name, reconnected, avatar: serverAvatar, stats, xUsername, autoMeet, cooldownHours, sessionToken }) => {
     myUserId = userId;
     myName = name;
     myStats = stats || null;
     myXUsername = xUsername || null;
-    sessionStorage.setItem("om_userId", userId);
-    sessionStorage.setItem("om_name", name);
-    if (xUsername) sessionStorage.setItem("om_xUsername", xUsername);
+    localStorage.setItem("om_userId", userId);
+    localStorage.setItem("om_name", name);
+    if (xUsername) localStorage.setItem("om_xUsername", xUsername);
+    if (sessionToken) localStorage.setItem("om_sessionToken", sessionToken);
 
     // Sync avatar: if server has one and we don't locally, adopt it
     if (serverAvatar && !myAvatar) {
@@ -1218,14 +2237,25 @@ function connectSocket() {
     }
 
     $("#my-name-display").innerHTML = xUsername
-      ? `${name} <span class="x-handle">@${xUsername}</span>`
-      : name;
+      ? `${escapeHtml(name)} <span class="x-handle">@${escapeHtml(xUsername)}</span>`
+      : escapeHtml(name);
     updateMyPfp();
     updateMyStats();
+    // Restore auto-meet state
+    autoMeetEnabled = !!autoMeet;
+    autoMeetCooldownHours = cooldownHours || 24;
+    updateAutoReachUI();
+    // Fetch saved contacts
+    socket.emit("get-contacts");
+    socket.emit("chat-history");
     if (reconnected) {
       showToast("Reconnected!", "success");
     } else {
       showScreen("contacts-screen");
+    }
+    // Show call-link banner if arriving via ?call=
+    if (callTarget && !callTargetAutoDialed) {
+      showCallLinkBanner(callTarget);
     }
   });
 
@@ -1241,10 +2271,20 @@ function connectSocket() {
     // Update own stats from the broadcast
     const me = list.find(u => u.userId === myUserId);
     if (me && me.stats) { myStats = me.stats; updateMyStats(); }
+
+    // Auto-call logic for ?call= links
+    if (callTarget && !callTargetAutoDialed) {
+      checkAutoCall(list);
+    }
   });
 
   socket.on("online-count", (count) => {
     $("#online-count-num").textContent = count;
+  });
+
+  socket.on("contacts-list", (contacts) => {
+    myContacts = contacts || [];
+    renderContacts($("#search-input").value);
   });
 
   // Caller flow
@@ -1257,13 +2297,15 @@ function connectSocket() {
     if (isCaller) await createAndSendOffer();
   });
 
-  socket.on("call-declined", () => {
+  socket.on("call-declined", ({ callId }) => {
+    if (callId && currentCallId && callId !== currentCallId) return;
     cleanup();
     if (currentRemote) setupEndedUI(currentRemote.name, currentRemote.avatar, `${currentRemote.name} declined the call`, 0);
     showScreen("ended-screen");
   });
 
-  socket.on("call-not-answered", () => {
+  socket.on("call-not-answered", ({ callId }) => {
+    if (callId && currentCallId && callId !== currentCallId) return;
     cleanup();
     if (currentRemote) setupEndedUI(currentRemote.name, currentRemote.avatar, `${currentRemote.name} didn't answer`, 0);
     showScreen("ended-screen");
@@ -1307,6 +2349,16 @@ function connectSocket() {
   socket.on("webrtc-answer", async ({ callId, sdp }) => { await handleAnswer(sdp); });
   socket.on("webrtc-ice-candidate", async ({ callId, candidate }) => { await handleIceCandidate(candidate); });
 
+  // Remote party toggled their camera
+  socket.on("video-toggle", ({ callId, videoOff }) => {
+    const overlay = $("#remote-video-off");
+    if (videoOff) {
+      overlay.classList.add("active");
+    } else {
+      overlay.classList.remove("active");
+    }
+  });
+
   // Call end
   socket.on("call-timeout", () => {
     cleanup();
@@ -1329,6 +2381,167 @@ function connectSocket() {
     showToast(message, "error");
     cleanup();
     showScreen("contacts-screen");
+  });
+
+  // Auto-Meet: server matched us with a mutual contact
+  socket.on("auto-meet-call", async ({ callId, remoteUserId, remoteName, remoteAvatar }) => {
+    currentCallId = callId;
+    currentRemote = { userId: remoteUserId, name: remoteName, avatar: remoteAvatar };
+    isCaller = true;
+    setupCallUI(remoteName, remoteAvatar, "Auto-Meet: Calling...");
+    showScreen("call-screen");
+    await startCamera();
+  });
+
+  // ── Chat events ───────────────────────────────────────────────────────
+  socket.on("chat-public", (msg) => {
+    renderChatMsg(msg, $("#chat-messages"));
+    if (!chatOpen && msg.userId !== myUserId) {
+      chatUnread++;
+      const badge = $("#chat-unread");
+      badge.textContent = chatUnread;
+      badge.style.display = "inline";
+    }
+  });
+
+  socket.on("chat-history", (messages) => {
+    const container = $("#chat-messages");
+    container.innerHTML = "";
+    messages.forEach(msg => renderChatMsg(msg, container));
+  });
+
+  socket.on("chat-stream", ({ streamId, ...msg }) => {
+    if (streamId !== currentStreamId) return;
+    renderChatMsg(msg, $("#stream-chat-messages"));
+  });
+
+  socket.on("chat-stream-history", ({ streamId, messages }) => {
+    if (streamId !== currentStreamId) return;
+    const container = $("#stream-chat-messages");
+    container.innerHTML = "";
+    messages.forEach(msg => renderChatMsg(msg, container));
+  });
+
+  // ── DM events ─────────────────────────────────────────────────────────
+  socket.on("chat-dm", (msg) => {
+    const peerId = msg.fromUserId;
+    if (!dmMessages.has(peerId)) dmMessages.set(peerId, []);
+    const entry = { text: msg.text, ts: msg.ts, sent: false };
+    dmMessages.get(peerId).push(entry);
+    // If DM panel is open for this person, render it
+    if (dmTargetUserId === peerId) {
+      appendDMMsg(entry);
+    }
+    // If in a call with this person, show badge
+    if (currentRemote && currentRemote.userId === peerId && dmTargetUserId !== peerId) {
+      callChatUnread++;
+      const badge = $("#call-chat-badge");
+      badge.textContent = callChatUnread;
+      badge.classList.add("active");
+    }
+    // Notification sound
+    playNotifSound();
+  });
+
+  socket.on("chat-dm-sent", (msg) => {
+    const peerId = msg.toUserId;
+    if (!dmMessages.has(peerId)) dmMessages.set(peerId, []);
+    const entry = { text: msg.text, ts: msg.ts, sent: true };
+    dmMessages.get(peerId).push(entry);
+    if (dmTargetUserId === peerId) {
+      appendDMMsg(entry);
+    }
+  });
+
+  socket.on("poke", ({ fromUserId, fromName, fromAvatar }) => {
+    playNotifSound();
+    showToast(`${fromName} poked you!`, "info", 3000);
+    flashTitle(`${fromName} poked you!`);
+    setTimeout(stopFlashTitle, 5000);
+  });
+
+  // ── Streaming events ──────────────────────────────────────────────────
+  socket.on("stream-started", ({ streamId }) => {
+    currentStreamId = streamId;
+    $("#stream-title-overlay").textContent = `${myName}'s stream`;
+    updateStreamViewerCount(0);
+    renderStreamViewers([]);
+    $("#stream-chat-messages").innerHTML = "";
+  });
+
+  socket.on("stream-joined", ({ streamId, streamerName, streamerAvatar, title, viewerCount, viewers }) => {
+    currentStreamId = streamId;
+    $("#stream-title-overlay").textContent = title || streamerName;
+    updateStreamViewerCount(viewerCount);
+    renderStreamViewers(viewers);
+    // Show streamer info for viewers
+    const info = $("#stream-streamer-info");
+    info.style.display = "flex";
+    const pfp = $("#stream-streamer-pfp");
+    const nameEl = $("#stream-streamer-name");
+    if (streamerAvatar) {
+      pfp.style.backgroundImage = `url(${streamerAvatar})`;
+      pfp.style.background = `url(${streamerAvatar}) center/cover`;
+      pfp.innerHTML = "";
+    } else {
+      const c = getColor(streamerName);
+      pfp.style.background = c;
+      pfp.innerHTML = `<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;color:#fff">${getInitials(streamerName)}</span>`;
+    }
+    nameEl.textContent = streamerName;
+    // Load stream chat history
+    $("#stream-chat-messages").innerHTML = "";
+    socket.emit("chat-stream-history", { streamId });
+  });
+
+  socket.on("viewer-joined", async ({ streamId, viewerId, viewerName }) => {
+    if (!isStreamer || streamId !== currentStreamId) return;
+    await sendStreamOffer(viewerId);
+  });
+
+  socket.on("viewer-left", ({ streamId, viewerId }) => {
+    if (!isStreamer) return;
+    const pc = streamPeerConnections.get(viewerId);
+    if (pc) { try { pc.close(); } catch {} streamPeerConnections.delete(viewerId); }
+  });
+
+  socket.on("stream-viewers", ({ streamId, viewers, viewerCount }) => {
+    if (streamId !== currentStreamId) return;
+    updateStreamViewerCount(viewerCount);
+    renderStreamViewers(viewers);
+  });
+
+  socket.on("stream-ended", ({ streamId }) => {
+    if (streamId !== currentStreamId) return;
+    cleanupStream();
+    showScreen("contacts-screen");
+    showToast("Stream ended", "info");
+  });
+
+  socket.on("stream-error", ({ message }) => {
+    showToast(message, "error");
+  });
+
+  // Stream WebRTC signaling
+  socket.on("stream-offer", async ({ streamId, sdp }) => {
+    if (!currentStreamId || isStreamer) return;
+    await handleStreamOffer(sdp);
+  });
+
+  socket.on("stream-answer", async ({ streamId, viewerId, sdp }) => {
+    if (!isStreamer) return;
+    const pc = streamPeerConnections.get(viewerId);
+    if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+  });
+
+  socket.on("stream-ice-candidate", async ({ streamId, viewerId, candidate }) => {
+    if (isStreamer && viewerId) {
+      const pc = streamPeerConnections.get(viewerId);
+      if (pc) { try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {} }
+    } else if (!isStreamer) {
+      const pc = streamPeerConnections.get("streamer");
+      if (pc) { try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch {} }
+    }
   });
 
   socket.on("disconnect", () => {
@@ -1359,16 +2572,162 @@ $("#name-input").addEventListener("input", () => {
 $("#search-input").addEventListener("input", (e) => renderContacts(e.target.value));
 
 // Invite
+// My Link — copies personal call URL
 $("#invite-btn").addEventListener("click", () => {
-  navigator.clipboard.writeText(window.location.href).then(() => {
-    showToast("Invite link copied!", "success");
+  const handle = myXUsername || myName;
+  const myLink = `${window.location.origin}/?call=${encodeURIComponent(handle)}`;
+  navigator.clipboard.writeText(myLink).then(() => {
+    showToast(`Copied: ${myLink}`, "success", 4000);
   }).catch(() => {
     const t = document.createElement("textarea");
-    t.value = window.location.href;
+    t.value = myLink;
     document.body.appendChild(t); t.select(); document.execCommand("copy"); document.body.removeChild(t);
-    showToast("Invite link copied!", "success");
+    showToast(`Copied: ${myLink}`, "success", 4000);
   });
 });
+
+// Auto-Meet toggle
+const COOLDOWN_OPTIONS = [1, 6, 12, 24, 48, 72];
+
+function updateAutoReachUI() {
+  $("#auto-meet-btn").classList.toggle("active", autoMeetEnabled);
+  $("#auto-meet-cooldown").textContent = autoMeetCooldownHours + "h";
+}
+
+$("#auto-meet-btn").addEventListener("click", (e) => {
+  // If clicking the cooldown label, cycle through options instead of toggling
+  if (e.target.id === "auto-meet-cooldown" || e.target.closest(".auto-meet-cooldown")) {
+    const idx = COOLDOWN_OPTIONS.indexOf(autoMeetCooldownHours);
+    autoMeetCooldownHours = COOLDOWN_OPTIONS[(idx + 1) % COOLDOWN_OPTIONS.length];
+    updateAutoReachUI();
+    if (socket) socket.emit("set-auto-meet", { enabled: autoMeetEnabled, cooldownHours: autoMeetCooldownHours });
+    showToast(`Auto-Meet cooldown: ${autoMeetCooldownHours}h`, "success");
+    return;
+  }
+  autoMeetEnabled = !autoMeetEnabled;
+  updateAutoReachUI();
+  if (socket) socket.emit("set-auto-meet", { enabled: autoMeetEnabled, cooldownHours: autoMeetCooldownHours });
+  showToast(autoMeetEnabled ? `Auto-Meet on (${autoMeetCooldownHours}h cooldown)` : "Auto-Meet off", autoMeetEnabled ? "success" : "info");
+});
+
+// DM panel
+$("#dm-close").addEventListener("click", closeDM);
+$("#dm-send").addEventListener("click", sendDM);
+$("#dm-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendDM(); });
+$("#dm-overlay").addEventListener("click", (e) => { if (e.target === $("#dm-overlay")) closeDM(); });
+
+// In-call chat button — opens DM with current call partner
+$("#call-chat-btn").addEventListener("click", () => {
+  if (!currentRemote) return;
+  callChatUnread = 0;
+  $("#call-chat-badge").classList.remove("active");
+  openDM(currentRemote.userId, currentRemote.name, currentRemote.avatar);
+});
+
+// Chat toggle
+$("#chat-toggle").addEventListener("click", () => {
+  chatOpen = !chatOpen;
+  $("#chat-panel").classList.toggle("active", chatOpen);
+  if (chatOpen) {
+    chatUnread = 0;
+    $("#chat-unread").style.display = "none";
+    const msgs = $("#chat-messages");
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+});
+
+// Chat send
+$("#chat-send").addEventListener("click", sendPublicChat);
+$("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendPublicChat(); });
+
+// Stream chat send
+$("#stream-chat-send").addEventListener("click", sendStreamChat);
+$("#stream-chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendStreamChat(); });
+
+// Go Live
+$("#go-live-btn").addEventListener("click", () => startStream());
+
+// Stream controls
+$("#stream-end-btn").addEventListener("click", () => leaveStream());
+$("#stream-mute-btn").addEventListener("click", () => {
+  if (!streamLocalStream) return;
+  const isEnabled = streamLocalStream.getAudioTracks()[0]?.enabled;
+  streamLocalStream.getAudioTracks().forEach(t => t.enabled = !isEnabled);
+  $("#stream-mute-btn").classList.toggle("active", isEnabled); // active = muted
+});
+$("#stream-video-btn").addEventListener("click", () => {
+  if (!streamLocalStream) return;
+  const off = streamLocalStream.getVideoTracks()[0]?.enabled;
+  streamLocalStream.getVideoTracks().forEach(t => t.enabled = !off);
+  $("#stream-video-btn").classList.toggle("active", off);
+});
+
+// Sign out
+$("#sign-out-link").addEventListener("click", (e) => {
+  e.preventDefault();
+  // Clean up any active stream
+  if (currentStreamId) leaveStream();
+  // Clear all stored identity
+  localStorage.removeItem("om_userId");
+  localStorage.removeItem("om_name");
+  localStorage.removeItem("om_xUsername");
+  localStorage.removeItem("om_last_name");
+  localStorage.removeItem("om_avatar");
+  sessionStorage.removeItem("om_callTarget");
+  // Disconnect socket
+  if (socket) socket.disconnect();
+  // Reset state
+  myUserId = null; myName = ""; myAvatar = null; myStats = null; myXUsername = null;
+  // Back to login
+  showScreen("login-screen");
+  showToast("Signed out", "success");
+});
+
+// Call-link banner close
+$("#call-link-close").addEventListener("click", () => {
+  callTarget = null;
+  callTargetAutoDialed = true;
+  $("#call-link-banner").classList.remove("active");
+});
+
+// Auto-call: check if the target user is online and dial them
+function checkAutoCall(userList) {
+  if (!callTarget || callTargetAutoDialed) return;
+
+  // Find target by xUsername or name (case-insensitive)
+  const targetLower = callTarget.toLowerCase();
+  const targetUser = userList.find(u =>
+    u.userId !== myUserId && (
+      (u.xUsername && u.xUsername.toLowerCase() === targetLower) ||
+      u.name.toLowerCase() === targetLower
+    )
+  );
+
+  const banner = $("#call-link-banner");
+  const statusEl = $("#call-link-status");
+
+  if (targetUser) {
+    // Target is online — auto-call!
+    statusEl.className = "call-link-status online";
+    statusEl.innerHTML = `<div class="dot"></div> Online! Calling now...`;
+
+    callTargetAutoDialed = true;
+    setTimeout(() => {
+      banner.classList.remove("active");
+      callUser(targetUser.userId, targetUser.name, targetUser.avatar || null);
+    }, 800);
+  } else {
+    // Target is offline — show waiting state
+    statusEl.className = "call-link-status offline";
+    statusEl.innerHTML = `<div class="dot"></div> Waiting for them to come online...`;
+  }
+}
+
+// Show the call-link banner
+function showCallLinkBanner(target) {
+  $("#call-link-target").textContent = target;
+  $("#call-link-banner").classList.add("active");
+}
 
 // Incoming call
 $("#accept-btn").addEventListener("click", async () => {
@@ -1397,6 +2756,12 @@ $("#video-btn").addEventListener("click", () => {
   isVideoOff = !isVideoOff;
   if (localStream) localStream.getVideoTracks().forEach(t => t.enabled = !isVideoOff);
   $("#video-btn").classList.toggle("active", isVideoOff);
+  // Show/hide local pfp
+  $("#local-pfp-placeholder").classList.toggle("active", isVideoOff);
+  // Notify remote party
+  if (currentCallId && socket) {
+    socket.emit("video-toggle", { callId: currentCallId, videoOff: isVideoOff });
+  }
 });
 $("#end-call-btn").addEventListener("click", endCurrentCall);
 
@@ -1408,12 +2773,23 @@ $("#back-btn").addEventListener("click", () => { currentRemote = null; showScree
 
 // ── Auto-reconnect on refresh ────────────────────────────────────────────
 window.addEventListener("load", async () => {
+  fetchTurnCredentials(); // non-blocking — creds ready before any call starts
   const savedAvatar = getStoredAvatar();
   if (savedAvatar) myAvatar = savedAvatar;
 
-  // ── Handle X OAuth redirect ─────────────────────────────────────────
   const params = new URLSearchParams(window.location.search);
 
+  // ── Detect ?call= param (personal call links) ────────────────────────
+  if (params.get("call")) {
+    callTarget = decodeURIComponent(params.get("call"));
+    sessionStorage.setItem("om_callTarget", callTarget);
+    // Clean URL but keep ?call for X OAuth return
+  } else if (sessionStorage.getItem("om_callTarget")) {
+    // Restore after OAuth redirect
+    callTarget = sessionStorage.getItem("om_callTarget");
+  }
+
+  // ── Handle X OAuth redirect ─────────────────────────────────────────
   if (params.get("auth_error")) {
     const err = params.get("auth_error");
     showToast(`X sign-in failed: ${err}`, "error", 5000);
@@ -1432,12 +2808,9 @@ window.addEventListener("load", async () => {
         myXUsername = profile.username;
         myAvatar = profile.avatar;
 
-        // Persist locally
         localStorage.setItem("om_last_name", myName);
         localStorage.setItem("om_xUsername", profile.username);
         if (profile.avatar) storeAvatar(profile.avatar);
-
-        sessionStorage.setItem("om_xUsername", profile.username);
 
         showToast(`Signed in as @${profile.username}`, "success");
         connectSocket();
@@ -1451,10 +2824,15 @@ window.addEventListener("load", async () => {
     }
   }
 
+  // Clean URL if we had ?call= (keep it in sessionStorage)
+  if (params.get("call")) {
+    window.history.replaceState({}, "", "/");
+  }
+
   // ── Normal reconnect ────────────────────────────────────────────────
-  const savedUserId = sessionStorage.getItem("om_userId");
-  const savedName = sessionStorage.getItem("om_name");
-  const savedX = sessionStorage.getItem("om_xUsername") || localStorage.getItem("om_xUsername");
+  const savedUserId = localStorage.getItem("om_userId");
+  const savedName = localStorage.getItem("om_name");
+  const savedX = localStorage.getItem("om_xUsername");
   if (savedX) myXUsername = savedX;
 
   if (savedUserId && savedName) {
@@ -1468,7 +2846,6 @@ window.addEventListener("load", async () => {
 });
 
 // Save name to localStorage for convenience
-const origJoinClick = $("#join-btn").onclick;
 $("#join-btn").addEventListener("click", () => {
   localStorage.setItem("om_last_name", $("#name-input").value.trim());
 });

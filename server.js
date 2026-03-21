@@ -9,8 +9,12 @@ const crypto = require("crypto");
 const app = express();
 const server = http.createServer(app);
 
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
+  : ["http://localhost:3001", "https://minimeet.cc"];
+
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
+  cors: { origin: ALLOWED_ORIGINS, methods: ["GET", "POST"] },
   pingTimeout: 30000,
   pingInterval: 10000,
   maxHttpBufferSize: 1e6,
@@ -176,6 +180,27 @@ app.get("/auth/resolve/:token", (req, res) => {
   });
 });
 
+// ─── TURN credentials endpoint ───────────────────────────────────────────────
+
+const TURN_SECRET = process.env.TURN_SECRET; // shared secret for HMAC-based TURN auth (Cloudflare/coturn)
+const TURN_URLS = process.env.TURN_URLS ? process.env.TURN_URLS.split(",").map(s => s.trim()) : null;
+const TURN_TTL = 86400; // 24h credential lifetime
+
+app.get("/api/turn-credentials", (req, res) => {
+  if (!TURN_SECRET || !TURN_URLS) {
+    // Fallback: return nothing, client will use its hardcoded STUN-only
+    return res.json({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+  }
+  const username = Math.floor(Date.now() / 1000 + TURN_TTL) + ":" + crypto.randomBytes(4).toString("hex");
+  const credential = crypto.createHmac("sha1", TURN_SECRET).update(username).digest("base64");
+  res.json({
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: TURN_URLS, username, credential },
+    ],
+  });
+});
+
 // ─── X Profile persistence ──────────────────────────────────────────────────
 
 async function dbGetXProfile(username) {
@@ -188,7 +213,7 @@ async function dbGetXProfile(username) {
     return null;
   }
   const stored = jsonGet("x_profiles", key);
-  return stored ? JSON.parse(stored) : null;
+  try { return stored ? JSON.parse(stored) : null; } catch { return null; }
 }
 
 async function dbSetXProfile(username, profile) {
@@ -263,7 +288,7 @@ async function dbGetStats(name) {
     return fresh;
   }
   const stored = jsonGet("stats", key);
-  const stats = stored ? JSON.parse(stored) : defaultStats();
+  let stats; try { stats = stored ? JSON.parse(stored) : defaultStats(); } catch { stats = defaultStats(); }
   statsCache.set(key, stats);
   return stats;
 }
@@ -290,6 +315,57 @@ async function recordCallOutcome(calleeName, outcome) {
   return stats;
 }
 
+// ─── Contacts (saved users) persistence ─────────────────────────────────────
+
+const contactsCache = new Map(); // owner key → Set of contact names
+
+async function dbGetContacts(ownerName) {
+  const key = ownerName.toLowerCase().trim();
+  if (contactsCache.has(key)) return [...contactsCache.get(key)];
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("contacts").select("contact_name").eq("owner", key);
+      const names = (data || []).map(r => r.contact_name);
+      contactsCache.set(key, new Set(names));
+      return names;
+    } catch (e) { console.warn("Contacts read error:", e.message); }
+    contactsCache.set(key, new Set());
+    return [];
+  }
+  const stored = jsonGet("contacts", key);
+  let names; try { names = stored ? JSON.parse(stored) : []; } catch { names = []; }
+  contactsCache.set(key, new Set(names));
+  return names;
+}
+
+async function dbAddContact(ownerName, contactName) {
+  const key = ownerName.toLowerCase().trim();
+  const contact = contactName.toLowerCase().trim();
+  if (!contactsCache.has(key)) await dbGetContacts(ownerName);
+  contactsCache.get(key).add(contact);
+  if (supabase) {
+    try {
+      await supabase.from("contacts").upsert({ owner: key, contact_name: contact, created_at: new Date().toISOString() });
+    } catch (e) { console.warn("Contact add error:", e.message); }
+    return;
+  }
+  jsonSet("contacts", key, JSON.stringify([...contactsCache.get(key)]));
+}
+
+async function dbRemoveContact(ownerName, contactName) {
+  const key = ownerName.toLowerCase().trim();
+  const contact = contactName.toLowerCase().trim();
+  if (!contactsCache.has(key)) await dbGetContacts(ownerName);
+  contactsCache.get(key).delete(contact);
+  if (supabase) {
+    try {
+      await supabase.from("contacts").delete().eq("owner", key).eq("contact_name", contact);
+    } catch (e) { console.warn("Contact remove error:", e.message); }
+    return;
+  }
+  jsonSet("contacts", key, JSON.stringify([...contactsCache.get(key)]));
+}
+
 // ─── JSON file fallback ─────────────────────────────────────────────────────
 
 const DATA_DIR = path.join(__dirname, "data");
@@ -304,28 +380,154 @@ function jsonGet(store, key) {
       else jsonStores[store] = {};
     } catch { jsonStores[store] = {}; }
   }
-  return jsonStores[store][key] || null;
+  const v = jsonStores[store][key];
+  return v !== undefined ? v : null;
 }
 
 function jsonSet(store, key, value) {
   if (!jsonStores[store]) jsonStores[store] = {};
-  if (value) jsonStores[store][key] = value; else delete jsonStores[store][key];
+  if (value !== null && value !== undefined) jsonStores[store][key] = value; else delete jsonStores[store][key];
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(path.join(DATA_DIR, `${store}.json`), JSON.stringify(jsonStores[store]), "utf-8");
   } catch (e) { console.warn(`JSON write error (${store}):`, e.message); }
 }
 
+// ─── Last-call timestamps (per pair) ─────────────────────────────────────────
+
+async function dbGetLastCall(nameA, nameB) {
+  const pair = [nameA, nameB].map(n => n.toLowerCase().trim()).sort().join(":");
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("last_calls").select("called_at").eq("pair", pair).single();
+      if (data) return new Date(data.called_at).getTime();
+    } catch {}
+    return 0;
+  }
+  const stored = jsonGet("last_calls", pair);
+  return stored ? parseInt(stored, 10) : 0;
+}
+
+async function dbSetLastCall(nameA, nameB) {
+  const pair = [nameA, nameB].map(n => n.toLowerCase().trim()).sort().join(":");
+  const now = Date.now();
+  if (supabase) {
+    try {
+      await supabase.from("last_calls").upsert({ pair, called_at: new Date(now).toISOString() });
+    } catch (e) { console.warn("Last-call write error:", e.message); }
+    return;
+  }
+  jsonSet("last_calls", pair, String(now));
+}
+
+// ─── User preferences persistence ────────────────────────────────────────────
+
+async function dbGetPrefs(name) {
+  const key = name.toLowerCase().trim();
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("user_prefs").select("*").eq("name", key).single();
+      if (data) return { autoMeet: !!data.auto_reach, cooldownHours: data.auto_reach_cooldown_hours || 24 };
+    } catch {}
+    return { autoMeet: false, cooldownHours: 24 };
+  }
+  const stored = jsonGet("user_prefs", key);
+  try { return stored ? JSON.parse(stored) : { autoMeet: false, cooldownHours: 24 }; } catch { return { autoMeet: false, cooldownHours: 24 }; }
+}
+
+async function dbSetPrefs(name, prefs) {
+  const key = name.toLowerCase().trim();
+  if (supabase) {
+    try {
+      await supabase.from("user_prefs").upsert({
+        name: key,
+        auto_reach: prefs.autoMeet,
+        auto_reach_cooldown_hours: prefs.cooldownHours,
+        updated_at: new Date().toISOString(),
+      });
+    } catch (e) { console.warn("Prefs write error:", e.message); }
+    return;
+  }
+  jsonSet("user_prefs", key, JSON.stringify(prefs));
+}
+
+// ─── Session tokens (guest identity protection) ─────────────────────────────
+
+const sessionTokens = new Map(); // lowercase name -> token hash
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+async function dbGetSessionToken(name) {
+  const key = name.toLowerCase().trim();
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("session_tokens").select("token_hash").eq("name", key).single();
+      if (data) return data.token_hash;
+    } catch {}
+    return null;
+  }
+  return jsonGet("session_tokens", key);
+}
+
+async function dbSetSessionToken(name, tokenHash) {
+  const key = name.toLowerCase().trim();
+  if (supabase) {
+    try {
+      await supabase.from("session_tokens").upsert({ name: key, token_hash: tokenHash, updated_at: new Date().toISOString() });
+    } catch (e) { console.warn("Session token write error:", e.message); }
+    return;
+  }
+  jsonSet("session_tokens", key, tokenHash);
+}
+
+// ─── Rate limiting ───────────────────────────────────────────────────────────
+
+const rateLimitBuckets = new Map(); // socketId -> { event -> { count, resetAt } }
+
+function rateLimit(socket, event, maxPerWindow, windowMs = 10_000) {
+  const sid = socket.id;
+  if (!rateLimitBuckets.has(sid)) rateLimitBuckets.set(sid, {});
+  const buckets = rateLimitBuckets.get(sid);
+  const now = Date.now();
+  if (!buckets[event] || now > buckets[event].resetAt) {
+    buckets[event] = { count: 1, resetAt: now + windowMs };
+    return true;
+  }
+  buckets[event].count++;
+  if (buckets[event].count > maxPerWindow) return false;
+  return true;
+}
+
+// Clean up rate limit data for disconnected sockets every 60s
+setInterval(() => {
+  const activeSockets = new Set(io.sockets.sockets.keys());
+  for (const sid of rateLimitBuckets.keys()) {
+    if (!activeSockets.has(sid)) rateLimitBuckets.delete(sid);
+  }
+}, 60_000);
+
+const MAX_NAME_LENGTH = 30;
+const MAX_AVATAR_BYTES = 200_000; // ~200KB for a 128x128 JPEG
+
 // ─── State ──────────────────────────────────────────────────────────────────
 
 const onlineUsers = new Map();
 const activeCalls = new Map();
+const activeStreams = new Map(); // streamId -> { streamerId, streamerName, streamerAvatar, streamerXUsername, title, startedAt, viewers: Set<userId> }
 const takenNames = new Map();
 const disconnectTimers = new Map();
 
 const CALL_DURATION_MS = 60_000;
 const RING_TIMEOUT_MS = 20_000;
 const RECONNECT_GRACE_MS = 15_000;
+const DEFAULT_COOLDOWN_HOURS = parseInt(process.env.AUTO_REACH_COOLDOWN_HOURS, 10) || 24;
+const AUTO_REACH_CHECK_MS = 30_000; // check every 30s
+const autoMeetPending = new Set(); // "nameA:nameB" pairs currently being auto-called
+const MAX_CHAT_HISTORY = 100;
+const publicChat = []; // rolling buffer of { id, userId, name, avatar, text, ts }
+const streamChats = new Map(); // streamId -> [ messages ]
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -333,10 +535,19 @@ function broadcastUserList() {
   const users = [];
   for (const [userId, data] of onlineUsers) {
     if (!data.disconnectedAt) {
+      // Check if user is streaming
+      let streaming = null;
+      for (const [streamId, s] of activeStreams) {
+        if (s.streamerId === userId) {
+          streaming = { streamId, title: s.title, viewerCount: s.viewers.size };
+          break;
+        }
+      }
       users.push({
         userId, name: data.name, status: data.status,
         avatar: data.avatar || null, stats: data.stats || null,
-        xUsername: data.xUsername || null,
+        xUsername: data.xUsername || null, autoMeet: data.autoMeet || false,
+        streaming,
       });
     }
   }
@@ -355,6 +566,13 @@ function cleanupCall(callId) {
   if (!call) return;
   clearTimeout(call.timerId);
   clearTimeout(call.ringTimerId);
+  // Clear auto-meet pending flag
+  const callerData = onlineUsers.get(call.callerId);
+  const calleeData = onlineUsers.get(call.calleeId);
+  if (callerData && calleeData) {
+    const pairKey = [callerData.name, calleeData.name].map(n => n.toLowerCase().trim()).sort().join(":");
+    autoMeetPending.delete(pairKey);
+  }
   activeCalls.delete(callId);
 }
 
@@ -374,6 +592,49 @@ function isUserInCall(userId) {
   return false;
 }
 
+function isUserStreaming(userId) {
+  for (const [, stream] of activeStreams) {
+    if (stream.streamerId === userId || stream.viewers.has(userId)) return true;
+  }
+  return false;
+}
+
+function getUserStream(userId) {
+  for (const [streamId, stream] of activeStreams) {
+    if (stream.streamerId === userId) return { streamId, stream };
+  }
+  return null;
+}
+
+function cleanupStream(streamId) {
+  const stream = activeStreams.get(streamId);
+  if (!stream) return;
+  for (const viewerId of stream.viewers) {
+    const vs = getSocketByUserId(viewerId);
+    if (vs) vs.emit("stream-ended", { streamId });
+  }
+  activeStreams.delete(streamId);
+  streamChats.delete(streamId);
+  broadcastUserList();
+}
+
+function broadcastStreamViewers(streamId) {
+  const stream = activeStreams.get(streamId);
+  if (!stream) return;
+  const viewers = [];
+  for (const vid of stream.viewers) {
+    const vd = onlineUsers.get(vid);
+    if (vd) viewers.push({ userId: vid, name: vd.name, avatar: vd.avatar || null });
+  }
+  // Send to streamer + all viewers
+  const ss = getSocketByUserId(stream.streamerId);
+  if (ss) ss.emit("stream-viewers", { streamId, viewers, viewerCount: viewers.length });
+  for (const vid of stream.viewers) {
+    const vs = getSocketByUserId(vid);
+    if (vs) vs.emit("stream-viewers", { streamId, viewers, viewerCount: viewers.length });
+  }
+}
+
 async function refreshUserStats(userId) {
   const userData = onlineUsers.get(userId);
   if (!userData) return;
@@ -385,19 +646,26 @@ async function refreshUserStats(userId) {
 
 io.on("connection", (socket) => {
 
-  socket.on("register", async ({ name, reconnectUserId, avatar, xUsername }) => {
-    const trimmedName = name.trim();
+  socket.on("register", async ({ name, reconnectUserId, avatar, xUsername, sessionToken }) => {
+    if (!name || typeof name !== "string") return;
+    const trimmedName = name.trim().slice(0, MAX_NAME_LENGTH);
+    if (!trimmedName) { socket.emit("register-error", { message: "Name cannot be empty" }); return; }
+    const safeAvatar = (avatar && typeof avatar === "string" && avatar.length <= MAX_AVATAR_BYTES) ? avatar : null;
 
     if (reconnectUserId && onlineUsers.has(reconnectUserId)) {
       const eu = onlineUsers.get(reconnectUserId);
+      if (eu.name.toLowerCase() !== trimmedName.toLowerCase()) { socket.emit("register-error", { message: "Name mismatch on reconnect" }); return; }
       if (disconnectTimers.has(reconnectUserId)) { clearTimeout(disconnectTimers.get(reconnectUserId)); disconnectTimers.delete(reconnectUserId); }
       eu.socketId = socket.id; eu.disconnectedAt = null; eu.status = "online";
-      if (avatar) { eu.avatar = avatar; await dbSetAvatar(eu.name, avatar); }
+      if (safeAvatar) { eu.avatar = safeAvatar; await dbSetAvatar(eu.name, safeAvatar); }
       socket.userId = reconnectUserId;
       const resolvedAvatar = eu.avatar || await dbGetAvatar(eu.name);
       eu.avatar = resolvedAvatar;
       eu.stats = await dbGetStats(eu.name);
-      socket.emit("registered", { userId: reconnectUserId, name: eu.name, reconnected: true, avatar: resolvedAvatar, stats: eu.stats, xUsername: eu.xUsername || null });
+      const prefs = await dbGetPrefs(eu.name);
+      eu.autoMeet = prefs.autoMeet;
+      eu.cooldownHours = prefs.cooldownHours;
+      socket.emit("registered", { userId: reconnectUserId, name: eu.name, reconnected: true, avatar: resolvedAvatar, stats: eu.stats, xUsername: eu.xUsername || null, autoMeet: eu.autoMeet, cooldownHours: eu.cooldownHours });
       broadcastUserList();
       return;
     }
@@ -407,20 +675,40 @@ io.on("connection", (socket) => {
       return;
     }
 
+    // Guest session token: if this name has a stored token, verify it
+    if (!xUsername) {
+      const storedHash = await dbGetSessionToken(trimmedName);
+      if (storedHash) {
+        if (!sessionToken || hashToken(sessionToken) !== storedHash) {
+          socket.emit("register-error", { message: `"${trimmedName}" is claimed. Pick a different name or sign in with X.` });
+          return;
+        }
+      }
+    }
+
     const userId = uuidv4().slice(0, 8);
     socket.userId = userId;
     const storedAvatar = await dbGetAvatar(trimmedName);
-    const resolvedAvatar = avatar || storedAvatar || null;
-    if (avatar && avatar !== storedAvatar) await dbSetAvatar(trimmedName, avatar);
+    const resolvedAvatar = safeAvatar || storedAvatar || null;
+    if (safeAvatar && safeAvatar !== storedAvatar) await dbSetAvatar(trimmedName, safeAvatar);
     const stats = await dbGetStats(trimmedName);
+    const prefs = await dbGetPrefs(trimmedName);
 
     onlineUsers.set(userId, {
       socketId: socket.id, name: trimmedName, status: "online",
       avatar: resolvedAvatar, stats, disconnectedAt: null,
-      xUsername: xUsername || null,
+      xUsername: xUsername || null, autoMeet: prefs.autoMeet, cooldownHours: prefs.cooldownHours,
     });
     takenNames.set(trimmedName.toLowerCase(), userId);
-    socket.emit("registered", { userId, name: trimmedName, reconnected: false, avatar: resolvedAvatar, stats, xUsername: xUsername || null });
+
+    // Issue session token for guest users
+    let newSessionToken = null;
+    if (!xUsername) {
+      newSessionToken = sessionToken || base64url(crypto.randomBytes(24));
+      await dbSetSessionToken(trimmedName, hashToken(newSessionToken));
+    }
+
+    socket.emit("registered", { userId, name: trimmedName, reconnected: false, avatar: resolvedAvatar, stats, xUsername: xUsername || null, autoMeet: prefs.autoMeet, cooldownHours: prefs.cooldownHours, sessionToken: newSessionToken });
     broadcastUserList();
     console.log(`✅ ${trimmedName}${xUsername ? " (@" + xUsername + ")" : ""} registered as ${userId}`);
   });
@@ -428,18 +716,222 @@ io.on("connection", (socket) => {
   socket.on("update-avatar", async ({ avatar }) => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
+    if (avatar && (typeof avatar !== "string" || avatar.length > MAX_AVATAR_BYTES)) return;
     userData.avatar = avatar || null;
     await dbSetAvatar(userData.name, avatar);
     broadcastUserList();
   });
 
+  // ── Contacts management ───────────────────────────────────────────────
+  socket.on("get-contacts", async () => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const contacts = await dbGetContacts(userData.name);
+    socket.emit("contacts-list", contacts);
+  });
+
+  socket.on("add-contact", async ({ contactName }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    await dbAddContact(userData.name, contactName);
+    const contacts = await dbGetContacts(userData.name);
+    socket.emit("contacts-list", contacts);
+  });
+
+  socket.on("remove-contact", async ({ contactName }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    await dbRemoveContact(userData.name, contactName);
+    const contacts = await dbGetContacts(userData.name);
+    socket.emit("contacts-list", contacts);
+  });
+
+  // ── Auto-Meet toggle ──────────────────────────────────────────────────
+  socket.on("set-auto-meet", async ({ enabled, cooldownHours }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    userData.autoMeet = !!enabled;
+    if (cooldownHours !== undefined && cooldownHours >= 1 && cooldownHours <= 168) {
+      userData.cooldownHours = cooldownHours;
+    }
+    await dbSetPrefs(userData.name, { autoMeet: userData.autoMeet, cooldownHours: userData.cooldownHours || DEFAULT_COOLDOWN_HOURS });
+    broadcastUserList();
+  });
+
+  // ── Streaming ────────────────────────────────────────────────────────────
+  socket.on("start-stream", ({ title }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (isUserInCall(userId) || isUserStreaming(userId)) { socket.emit("stream-error", { message: "You're already in a call or stream" }); return; }
+
+    const streamId = uuidv4().slice(0, 12);
+    activeStreams.set(streamId, {
+      streamerId: userId, streamerName: userData.name,
+      streamerAvatar: userData.avatar || null, streamerXUsername: userData.xUsername || null,
+      title: title || `${userData.name}'s stream`, startedAt: Date.now(),
+      viewers: new Set(),
+    });
+    socket.emit("stream-started", { streamId });
+    broadcastUserList();
+    console.log(`📺 ${userData.name} started streaming: ${title || userData.name + "'s stream"}`);
+  });
+
+  socket.on("end-stream", ({ streamId }) => {
+    const userId = socket.userId; if (!userId) return;
+    const stream = activeStreams.get(streamId);
+    if (!stream || stream.streamerId !== userId) return;
+    cleanupStream(streamId);
+    console.log(`📺 ${stream.streamerName} ended stream`);
+  });
+
+  socket.on("join-stream", ({ streamId }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (isUserInCall(userId) || isUserStreaming(userId)) { socket.emit("stream-error", { message: "You're already in a call or stream" }); return; }
+
+    const stream = activeStreams.get(streamId);
+    if (!stream) { socket.emit("stream-error", { message: "Stream not found" }); return; }
+
+    stream.viewers.add(userId);
+    // Build viewer list with profiles
+    const viewerProfiles = [];
+    for (const vid of stream.viewers) {
+      const vd = onlineUsers.get(vid);
+      if (vd) viewerProfiles.push({ userId: vid, name: vd.name, avatar: vd.avatar || null });
+    }
+
+    socket.emit("stream-joined", {
+      streamId, streamerName: stream.streamerName, streamerAvatar: stream.streamerAvatar,
+      streamerUserId: stream.streamerId, title: stream.title,
+      viewerCount: stream.viewers.size, viewers: viewerProfiles,
+    });
+
+    // Tell streamer about new viewer (so they create a PeerConnection)
+    const ss = getSocketByUserId(stream.streamerId);
+    if (ss) ss.emit("viewer-joined", { streamId, viewerId: userId, viewerName: userData.name, viewerAvatar: userData.avatar || null });
+
+    // Broadcast updated viewer list to all stream participants
+    broadcastStreamViewers(streamId);
+    broadcastUserList();
+  });
+
+  socket.on("leave-stream", ({ streamId }) => {
+    const userId = socket.userId; if (!userId) return;
+    const stream = activeStreams.get(streamId);
+    if (!stream) return;
+    stream.viewers.delete(userId);
+    const ss = getSocketByUserId(stream.streamerId);
+    if (ss) ss.emit("viewer-left", { streamId, viewerId: userId });
+    broadcastStreamViewers(streamId);
+    broadcastUserList();
+  });
+
+  // Stream WebRTC signaling
+  socket.on("stream-offer", ({ streamId, viewerId, sdp }) => {
+    const stream = activeStreams.get(streamId); if (!stream) return;
+    const vs = getSocketByUserId(viewerId);
+    if (vs) vs.emit("stream-offer", { streamId, sdp });
+  });
+
+  socket.on("stream-answer", ({ streamId, sdp }) => {
+    const userId = socket.userId;
+    const stream = activeStreams.get(streamId); if (!stream) return;
+    const ss = getSocketByUserId(stream.streamerId);
+    if (ss) ss.emit("stream-answer", { streamId, viewerId: userId, sdp });
+  });
+
+  socket.on("stream-ice-candidate", ({ streamId, viewerId, candidate }) => {
+    const userId = socket.userId;
+    const stream = activeStreams.get(streamId); if (!stream) return;
+    if (userId === stream.streamerId) {
+      // Streamer -> viewer
+      const vs = getSocketByUserId(viewerId);
+      if (vs) vs.emit("stream-ice-candidate", { streamId, candidate });
+    } else {
+      // Viewer -> streamer
+      const ss = getSocketByUserId(stream.streamerId);
+      if (ss) ss.emit("stream-ice-candidate", { streamId, viewerId: userId, candidate });
+    }
+  });
+
+  // ── Chat ─────────────────────────────────────────────────────────────────
+  socket.on("chat-public", ({ text }) => {
+    if (!rateLimit(socket, "chat", 10, 10_000)) return; // 10 msgs per 10s
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const trimmed = (text || "").trim().slice(0, 500);
+    if (!trimmed) return;
+    const msg = { id: uuidv4().slice(0, 10), userId, name: userData.name, avatar: userData.avatar || null, text: trimmed, ts: Date.now() };
+    publicChat.push(msg);
+    if (publicChat.length > MAX_CHAT_HISTORY) publicChat.shift();
+    io.emit("chat-public", msg);
+  });
+
+  socket.on("chat-history", () => {
+    socket.emit("chat-history", publicChat.slice(-50));
+  });
+
+  socket.on("chat-stream", ({ streamId, text }) => {
+    if (!rateLimit(socket, "chat", 10, 10_000)) return;
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const stream = activeStreams.get(streamId); if (!stream) return;
+    // Must be streamer or viewer
+    if (stream.streamerId !== userId && !stream.viewers.has(userId)) return;
+    const trimmed = (text || "").trim().slice(0, 500);
+    if (!trimmed) return;
+    const msg = { id: uuidv4().slice(0, 10), userId, name: userData.name, avatar: userData.avatar || null, text: trimmed, ts: Date.now() };
+    if (!streamChats.has(streamId)) streamChats.set(streamId, []);
+    const chat = streamChats.get(streamId);
+    chat.push(msg);
+    if (chat.length > MAX_CHAT_HISTORY) chat.shift();
+    // Send to streamer + all viewers
+    const ss = getSocketByUserId(stream.streamerId);
+    if (ss) ss.emit("chat-stream", { streamId, ...msg });
+    for (const vid of stream.viewers) {
+      const vs = getSocketByUserId(vid);
+      if (vs) vs.emit("chat-stream", { streamId, ...msg });
+    }
+  });
+
+  socket.on("chat-stream-history", ({ streamId }) => {
+    const chat = streamChats.get(streamId) || [];
+    socket.emit("chat-stream-history", { streamId, messages: chat.slice(-50) });
+  });
+
+  // P2P direct messages (ephemeral — not stored)
+  socket.on("chat-dm", ({ toUserId, text }) => {
+    if (!rateLimit(socket, "chat", 10, 10_000)) return;
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const target = onlineUsers.get(toUserId); if (!target || target.disconnectedAt) return;
+    const trimmed = (text || "").trim().slice(0, 500);
+    if (!trimmed) return;
+    const msg = { id: uuidv4().slice(0, 10), fromUserId: userId, fromName: userData.name, fromAvatar: userData.avatar || null, text: trimmed, ts: Date.now() };
+    const ts = getSocketByUserId(toUserId);
+    if (ts) ts.emit("chat-dm", msg);
+    // Echo back to sender for display
+    socket.emit("chat-dm-sent", { toUserId, toName: target.name, ...msg });
+  });
+
+  // Poke — lightweight nudge
+  socket.on("poke", ({ toUserId }) => {
+    if (!rateLimit(socket, "poke", 3, 30_000)) return; // 3 pokes per 30s
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const target = onlineUsers.get(toUserId); if (!target || target.disconnectedAt) return;
+    const ts = getSocketByUserId(toUserId);
+    if (ts) ts.emit("poke", { fromUserId: userId, fromName: userData.name, fromAvatar: userData.avatar || null });
+  });
+
   socket.on("call-user", ({ calleeId }) => {
-    const callerId = socket.userId;
-    const caller = onlineUsers.get(callerId);
+    if (!rateLimit(socket, "call-user", 3, 10_000)) return; // 3 calls per 10s
+    const callerId = socket.userId; if (!callerId) return;
+    const caller = onlineUsers.get(callerId); if (!caller) return;
     const callee = onlineUsers.get(calleeId);
     if (!callee || callee.disconnectedAt) { socket.emit("call-error", { message: "User is offline" }); return; }
-    if (isUserInCall(calleeId)) { socket.emit("call-error", { message: `${callee.name} is already in a call` }); return; }
-    if (isUserInCall(callerId)) { socket.emit("call-error", { message: "You are already in a call" }); return; }
+    if (isUserInCall(calleeId) || isUserStreaming(calleeId)) { socket.emit("call-error", { message: `${callee.name} is busy` }); return; }
+    if (isUserInCall(callerId) || isUserStreaming(callerId)) { socket.emit("call-error", { message: "You're already in a call or stream" }); return; }
 
     const callId = uuidv4().slice(0, 12);
     const ringTimerId = setTimeout(async () => {
@@ -463,7 +955,9 @@ io.on("connection", (socket) => {
     const call = activeCalls.get(callId); if (!call) return;
     clearTimeout(call.ringTimerId); call.startedAt = Date.now();
     const callee = onlineUsers.get(call.calleeId);
+    const caller = onlineUsers.get(call.callerId);
     if (callee) { await recordCallOutcome(callee.name, "accepted"); await refreshUserStats(call.calleeId); }
+    if (caller && callee) await dbSetLastCall(caller.name, callee.name);
     call.timerId = setTimeout(() => {
       const s1 = getSocketByUserId(call.callerId); const s2 = getSocketByUserId(call.calleeId);
       if (s1) s1.emit("call-timeout", { callId }); if (s2) s2.emit("call-timeout", { callId });
@@ -494,9 +988,26 @@ io.on("connection", (socket) => {
   socket.on("webrtc-answer", ({ callId, sdp }) => { const c = activeCalls.get(callId); if (!c) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("webrtc-answer", { callId, sdp }); });
   socket.on("webrtc-ice-candidate", ({ callId, candidate }) => { const c = activeCalls.get(callId); if (!c) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("webrtc-ice-candidate", { callId, candidate }); });
 
+  // Video toggle relay
+  socket.on("video-toggle", ({ callId, videoOff }) => { const c = activeCalls.get(callId); if (!c) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("video-toggle", { callId, videoOff }); });
+
   socket.on("disconnect", () => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
+
+    // Clean up streams immediately (no grace period for streams)
+    const userStream = getUserStream(userId);
+    if (userStream) cleanupStream(userStream.streamId);
+    // Remove from any stream they're viewing
+    for (const [streamId, stream] of activeStreams) {
+      if (stream.viewers.has(userId)) {
+        stream.viewers.delete(userId);
+        const ss = getSocketByUserId(stream.streamerId);
+        if (ss) ss.emit("viewer-left", { streamId, viewerId: userId });
+        broadcastStreamViewers(streamId);
+      }
+    }
+
     userData.disconnectedAt = Date.now(); broadcastUserList();
     const timer = setTimeout(() => {
       for (const [callId, call] of activeCalls) {
@@ -517,7 +1028,81 @@ io.on("connection", (socket) => {
 
 app.use(express.static(path.join(__dirname, "public")));
 
+// ─── Auto-Meet: periodic matcher ───────────────────────────────────────────
+
+async function areMutualContacts(nameA, nameB) {
+  const contactsA = await dbGetContacts(nameA);
+  const contactsB = await dbGetContacts(nameB);
+  return contactsA.includes(nameB.toLowerCase().trim()) && contactsB.includes(nameA.toLowerCase().trim());
+}
+
+setInterval(async () => {
+  // Collect online users with autoMeet enabled who are not in a call
+  const candidates = [];
+  for (const [userId, data] of onlineUsers) {
+    if (data.autoMeet && !data.disconnectedAt && !isUserInCall(userId) && !isUserStreaming(userId)) {
+      candidates.push({ userId, name: data.name, cooldownHours: data.cooldownHours || DEFAULT_COOLDOWN_HOURS });
+    }
+  }
+  if (candidates.length < 2) return;
+
+  // Check each pair
+  const matched = new Set();
+  for (let i = 0; i < candidates.length; i++) {
+    if (matched.has(candidates[i].userId)) continue;
+    for (let j = i + 1; j < candidates.length; j++) {
+      if (matched.has(candidates[j].userId)) continue;
+
+      const a = candidates[i], b = candidates[j];
+      const pairKey = [a.name, b.name].map(n => n.toLowerCase().trim()).sort().join(":");
+      if (autoMeetPending.has(pairKey)) continue;
+
+      // Must be mutual contacts
+      if (!(await areMutualContacts(a.name, b.name))) continue;
+
+      // Check cooldown (use the shorter of the two users' cooldown preferences)
+      const cooldownMs = Math.min(a.cooldownHours, b.cooldownHours) * 60 * 60 * 1000;
+      const lastCall = await dbGetLastCall(a.name, b.name);
+      if (Date.now() - lastCall < cooldownMs) continue;
+
+      // Match found — initiate auto-call
+      autoMeetPending.add(pairKey);
+      matched.add(a.userId);
+      matched.add(b.userId);
+
+      // Caller is whichever comes first alphabetically (deterministic)
+      const [caller, callee] = a.name.toLowerCase() < b.name.toLowerCase() ? [a, b] : [b, a];
+      const callerData = onlineUsers.get(caller.userId);
+      const calleeData = onlineUsers.get(callee.userId);
+      if (!callerData || !calleeData) { autoMeetPending.delete(pairKey); continue; }
+
+      const callId = uuidv4().slice(0, 12);
+      const ringTimerId = setTimeout(async () => {
+        const call = activeCalls.get(callId);
+        if (call && !call.startedAt) {
+          await recordCallOutcome(calleeData.name, "missed");
+          await refreshUserStats(callee.userId);
+          const s1 = getSocketByUserId(caller.userId); if (s1) s1.emit("call-not-answered", { callId });
+          const s2 = getSocketByUserId(callee.userId); if (s2) s2.emit("call-cancelled", { callId });
+          cleanupCall(callId);
+        }
+        autoMeetPending.delete(pairKey);
+      }, RING_TIMEOUT_MS);
+
+      activeCalls.set(callId, { callerId: caller.userId, calleeId: callee.userId, startedAt: null, timerId: null, ringTimerId });
+
+      const s1 = getSocketByUserId(caller.userId);
+      const s2 = getSocketByUserId(callee.userId);
+      if (s1) s1.emit("auto-meet-call", { callId, remoteUserId: callee.userId, remoteName: calleeData.name, remoteAvatar: calleeData.avatar || null });
+      if (s2) s2.emit("incoming-call", { callId, callerId: caller.userId, callerName: callerData.name, callerAvatar: callerData.avatar || null, callerXUsername: callerData.xUsername || null, autoMeet: true });
+
+      console.log(`🔄 Auto-Meet: ${caller.name} ↔ ${callee.name}`);
+      break; // only one match per candidate per cycle
+    }
+  }
+}, AUTO_REACH_CHECK_MS);
+
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`\n  🕐 OneMinute on http://localhost:${PORT} | DB: ${supabase ? "Supabase" : "JSON"} | X OAuth: ${X_CLIENT_ID ? "✅" : "❌"}\n`);
+  console.log(`\n  📞 minimeet.cc on http://localhost:${PORT} | DB: ${supabase ? "Supabase" : "JSON"} | X OAuth: ${X_CLIENT_ID ? "✅" : "❌"}\n`);
 });

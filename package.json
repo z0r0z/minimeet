@@ -1,7 +1,7 @@
 {
-  "name": "oneminute-signaling-server",
+  "name": "minimeet",
   "version": "1.0.0",
-  "description": "Signaling server for OneMinute 60-second video calling app",
+  "description": "minimeet.cc — mini meets",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

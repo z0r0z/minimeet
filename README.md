@@ -1,4 +1,4 @@
-# 🕐 OneMinute — 60-Second Video Calling
+# minimeet.cc — mini meets
 
 A browser-based video calling app where every call is limited to exactly **60 seconds**. Built with WebRTC for peer-to-peer video and Socket.IO for signaling.
 
@@ -15,11 +15,24 @@ A browser-based video calling app where every call is limited to exactly **60 se
      │                  Video + Audio (direct)                               │
 ```
 
-1. Users join by entering their name
+1. Users join by entering their name or signing in with X
 2. The server tracks who's online and relays signaling messages
 3. When a call is accepted, WebRTC establishes a direct peer-to-peer video connection
 4. The server enforces a 60-second hard limit — when time's up, both sides are notified
 5. Call ended screen shows duration and option to call again
+
+## Features
+
+- **1-minute video calls** — WebRTC peer-to-peer with 60-second timer
+- **Live streaming** — go live and let others watch (1-to-many WebRTC)
+- **Public chat** — global message board for all online users
+- **Stream chat** — chat overlay for streamers and viewers
+- **DMs** — ephemeral direct messages and pokes
+- **Auto-Meet** — automatically call mutual contacts you haven't talked to recently
+- **Contacts** — save users, see who's online/offline
+- **X (Twitter) OAuth** — sign in with your X account
+- **Avatars & stats** — profile pictures, pickup rates, streaks
+- **Call links** — share a personal link to auto-call you
 
 ## Quick Start
 
@@ -33,42 +46,101 @@ npm start
 
 Then open **http://localhost:3001** in two browser tabs (or two different devices on the same network).
 
-## Testing Locally
+## Environment Variables
 
-1. Open **Tab 1** → enter a name like "Alice" → Join
-2. Open **Tab 2** → enter a name like "Bob" → Join
-3. Alice will see Bob in the contacts list (and vice versa)
-4. Click the video icon to call
-5. The other tab gets an incoming call popup
-6. Accept → real WebRTC video connection with 60-second countdown
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3001` | Server port |
+| `SUPABASE_URL` | — | Supabase project URL (optional, falls back to local JSON) |
+| `SUPABASE_KEY` | — | Supabase anon/service key |
+| `X_CLIENT_ID` | — | X OAuth 2.0 client ID |
+| `X_CLIENT_SECRET` | — | X OAuth 2.0 client secret |
+| `X_CALLBACK_URL` | `http://localhost:3001/auth/x/callback` | OAuth callback URL |
+| `TURN_SECRET` | — | Shared secret for HMAC-based TURN credentials |
+| `TURN_URLS` | — | Comma-separated TURN server URLs |
+| `ALLOWED_ORIGINS` | `http://localhost:3001,https://minimeet.cc` | CORS allowed origins |
+| `AUTO_REACH_COOLDOWN_HOURS` | `24` | Default Auto-Meet cooldown |
 
-## Project Structure
+## Supabase Tables
 
+```sql
+create table if not exists x_profiles (
+  username text primary key,
+  x_id text not null,
+  display_name text,
+  avatar text,
+  updated_at timestamptz default now()
+);
+
+create table if not exists avatars (
+  name text primary key,
+  data text,
+  updated_at timestamptz default now()
+);
+
+create table if not exists call_stats (
+  name text primary key,
+  received int default 0,
+  accepted int default 0,
+  declined int default 0,
+  missed int default 0,
+  streak int default 0,
+  best_streak int default 0,
+  updated_at timestamptz default now()
+);
+
+create table if not exists contacts (
+  owner text not null,
+  contact_name text not null,
+  created_at timestamptz default now(),
+  primary key (owner, contact_name)
+);
+
+create table if not exists last_calls (
+  pair text primary key,
+  called_at timestamptz default now()
+);
+
+create table if not exists user_prefs (
+  name text primary key,
+  auto_reach boolean default false,
+  auto_reach_cooldown_hours integer default 24,
+  updated_at timestamptz default now()
+);
+
+create table if not exists session_tokens (
+  name text primary key,
+  token_hash text not null,
+  updated_at timestamptz default now()
+);
 ```
-oneminute/
-├── server.js          # Signaling server (Express + Socket.IO)
-├── package.json       # Dependencies
-├── public/
-│   └── index.html     # Full client app (HTML + CSS + JS)
-└── README.md
-```
 
-## Architecture Details
+## Architecture
 
-### Signaling Server (`server.js`)
-- **User registry**: Tracks online users with Socket.IO
-- **Call management**: Handles call initiation, accept/decline, and cleanup
-- **SDP relay**: Forwards WebRTC offers and answers between peers
-- **ICE relay**: Forwards ICE candidates for NAT traversal
-- **60s enforcement**: Server-side timer that forcefully ends calls
+### Server (`server.js`)
+
+Express + Socket.IO signaling server. No media passes through the server — it only coordinates connections.
+
+- **User registry** — tracks online users, names, avatars, stats in-memory (`onlineUsers` Map)
+- **Call management** — initiation, accept/decline, 60s enforcement, ring timeout (20s), reconnect grace (15s)
+- **Stream management** — 1-to-many live streams with per-viewer WebRTC peer connections
+- **Chat relay** — public broadcast, stream-scoped, and ephemeral P2P direct messages
+- **Auto-Meet** — periodic matcher (every 30s) pairs mutual contacts who haven't called recently
+- **Persistence** — Supabase when configured, falls back to local JSON files in `/data/`
+- **Auth** — X OAuth 2.0 with PKCE, guest session tokens (SHA-256 hashed)
+- **Security** — rate limiting (calls, chat, pokes), CORS origin restriction, avatar size validation, server-side TURN credential generation
 
 ### Client (`public/index.html`)
-- **WebRTC**: Full peer-to-peer video/audio using RTCPeerConnection
-- **Camera access**: getUserMedia for local video/audio
-- **ICE servers**: Uses Google's free STUN servers for NAT traversal
-- **Responsive UI**: Works on desktop and mobile browsers
 
-### Signaling Flow
+Single-page app — all HTML, CSS, and JS in one file.
+
+- **Screens** — login, contacts/lobby, call, stream, ended (plus incoming-call overlay and DM drawer)
+- **WebRTC** — `RTCPeerConnection` per call; streamers maintain one PC per viewer
+- **TURN credentials** — fetched from `/api/turn-credentials` on page load (HMAC short-lived)
+- **Chat** — public chat panel (contacts screen), stream chat overlay, DM bottom-sheet
+- **Responsive** — media queries for mobile (480px) and tiny screens (360px)
+
+### Signaling Flow (Calls)
 
 ```
 Caller                  Server                  Callee
@@ -90,47 +162,43 @@ Caller                  Server                  Callee
   │◄── call-timeout ──────│──── call-timeout ────►│
 ```
 
-## Deploying to Production
+### Streaming Flow
 
-### Requirements for Production
-1. **HTTPS**: WebRTC requires a secure context. Use a reverse proxy like nginx with Let's Encrypt.
-2. **TURN server**: STUN alone won't work for all NAT types. Set up a TURN server with [coturn](https://github.com/coturn/coturn) or use a service like Twilio's TURN.
-3. **Domain**: Point a domain to your server.
-
-### Quick Deploy with Railway / Render / Fly.io
-
-```bash
-# Railway
-railway init
-railway up
-
-# Render — just connect your repo, set start command to `npm start`
-
-# Fly.io
-fly launch
-fly deploy
+```
+Streamer                Server                  Viewer
+  │                       │                       │
+  │── start-stream ──────►│                       │
+  │◄── stream-started ────│                       │
+  │                       │◄──── join-stream ─────│
+  │◄── viewer-joined ─────│──── stream-joined ───►│
+  │                       │                       │
+  │── stream-offer ──────►│──── stream-offer ────►│
+  │                       │◄──── stream-answer ───│
+  │◄── stream-answer ─────│                       │
+  │                       │                       │
+  │◄─ ice-candidates ────►│◄── ice-candidates ───►│
+  │                       │                       │
+  │  [repeats per viewer]                         │
 ```
 
-### Adding a TURN Server
+### API Endpoints
 
-Update the `ICE_SERVERS` array in `public/index.html`:
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/auth/x` | Start X OAuth flow |
+| GET | `/auth/x/callback` | OAuth callback |
+| GET | `/auth/resolve/:token` | Resolve auth token to profile |
+| GET | `/api/turn-credentials` | Get short-lived TURN credentials |
 
-```javascript
-const ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  {
-    urls: "turn:your-turn-server.com:3478",
-    username: "your-username",
-    credential: "your-password"
-  }
-];
+## Project Structure
+
 ```
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT`   | `3001`  | Server port |
+├── server.js          # Signaling server (Express + Socket.IO)
+├── package.json       # Dependencies
+├── public/
+│   └── index.html     # Full client app (HTML + CSS + JS)
+└── README.md
+```
 
 ## Browser Support
 
