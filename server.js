@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require("uuid");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const { verifyMessage } = require("ethers");
 
 const app = express();
 const server = http.createServer(app);
@@ -200,6 +201,40 @@ app.get("/api/turn-credentials", (req, res) => {
     ],
   });
 });
+
+// ─── Wallet signature verification ───────────────────────────────────────────
+
+const walletNonces = new Map(); // address → { nonce, createdAt }
+
+// Clean up expired nonces every 5 min
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of walletNonces) { if (now - v.createdAt > 300_000) walletNonces.delete(k); }
+}, 300_000);
+
+app.get("/auth/wallet/nonce", (req, res) => {
+  const address = (req.query.address || "").toLowerCase().trim();
+  if (!/^0x[0-9a-f]{40}$/.test(address)) return res.status(400).json({ error: "Invalid address" });
+  const nonce = base64url(crypto.randomBytes(16));
+  walletNonces.set(address, { nonce, createdAt: Date.now() });
+  const message = `Sign in to minimeet.cc\n\nNonce: ${nonce}`;
+  res.json({ message, nonce });
+});
+
+function verifyWalletSignature(address, signature, nonce) {
+  const addr = address.toLowerCase();
+  const stored = walletNonces.get(addr);
+  if (!stored || stored.nonce !== nonce) return false;
+  const message = `Sign in to minimeet.cc\n\nNonce: ${nonce}`;
+  try {
+    const recovered = verifyMessage(message, signature).toLowerCase();
+    if (recovered === addr) {
+      walletNonces.delete(addr); // single-use
+      return true;
+    }
+  } catch (e) { console.warn("Wallet signature verification failed:", e.message); }
+  return false;
+}
 
 // ─── X Profile persistence ──────────────────────────────────────────────────
 
@@ -588,8 +623,8 @@ const takenNames = new Map();
 const disconnectTimers = new Map();
 
 const CALL_DURATION_MS = 60_000;
-const RING_TIMEOUT_MS = 20_000;
-const RECONNECT_GRACE_MS = 15_000;
+const RING_TIMEOUT_MS = 30_000;
+const RECONNECT_GRACE_MS = 30_000;
 const DEFAULT_COOLDOWN_HOURS = parseInt(process.env.AUTO_REACH_COOLDOWN_HOURS, 10) || 24;
 const AUTO_REACH_CHECK_MS = 30_000; // check every 30s
 const autoMeetPending = new Set(); // "nameA:nameB" pairs currently being auto-called
@@ -725,12 +760,24 @@ async function refreshUserStats(userId) {
 
 io.on("connection", (socket) => {
 
-  socket.on("register", async ({ name, reconnectUserId, avatar, xUsername, walletAddress, sessionToken }) => {
+  socket.on("register", async ({ name, reconnectUserId, avatar, xUsername, walletAddress, walletSignature, walletNonce, sessionToken }) => {
     if (!name || typeof name !== "string") return;
     const trimmedName = name.trim().slice(0, MAX_NAME_LENGTH);
     if (!trimmedName) { socket.emit("register-error", { message: "Name cannot be empty" }); return; }
     const safeAvatar = (avatar && typeof avatar === "string" && avatar.length <= MAX_AVATAR_BYTES) ? avatar : null;
-    const safeWallet = (walletAddress && typeof walletAddress === "string" && /^0x[0-9a-fA-F]{40}$/.test(walletAddress)) ? walletAddress.toLowerCase() : null;
+    let safeWallet = (walletAddress && typeof walletAddress === "string" && /^0x[0-9a-fA-F]{40}$/.test(walletAddress)) ? walletAddress.toLowerCase() : null;
+
+    // Verify wallet signature if wallet is being used for first-time login (not reconnect)
+    if (safeWallet && walletSignature && walletNonce) {
+      if (!verifyWalletSignature(safeWallet, walletSignature, walletNonce)) {
+        socket.emit("register-error", { message: "Wallet signature verification failed" });
+        return;
+      }
+    } else if (safeWallet && !reconnectUserId && !sessionToken) {
+      // First-time wallet login without signature — reject
+      socket.emit("register-error", { message: "Wallet signature required" });
+      return;
+    }
 
     if (reconnectUserId && onlineUsers.has(reconnectUserId)) {
       const eu = onlineUsers.get(reconnectUserId);
@@ -831,11 +878,16 @@ io.on("connection", (socket) => {
     broadcastUserList();
   });
 
-  socket.on("link-wallet", async ({ walletAddress }) => {
+  socket.on("link-wallet", async ({ walletAddress, walletSignature, walletNonce }) => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
     const safeWallet = (walletAddress && typeof walletAddress === "string" && /^0x[0-9a-fA-F]{40}$/.test(walletAddress)) ? walletAddress.toLowerCase() : null;
     if (!safeWallet) return;
+    // Verify signature
+    if (!walletSignature || !walletNonce || !verifyWalletSignature(safeWallet, walletSignature, walletNonce)) {
+      socket.emit("wallet-link-error", { message: "Wallet signature verification failed" });
+      return;
+    }
     userData.walletAddress = safeWallet;
     await dbSetWallet(userData.name, safeWallet);
     socket.emit("wallet-linked", { walletAddress: safeWallet });

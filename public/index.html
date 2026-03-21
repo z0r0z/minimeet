@@ -1548,6 +1548,22 @@ function updateLinkButtons() {
   if (linkXBtn) linkXBtn.style.display = (!myXUsername && myUserId) ? '' : 'none';
 }
 
+// ── Wallet signature ────────────────────────────────────────────────────
+
+async function requestWalletSignature(address) {
+  // 1. Get nonce from server
+  const res = await fetch(`/auth/wallet/nonce?address=${encodeURIComponent(address)}`);
+  if (!res.ok) throw new Error("Failed to get nonce");
+  const { message, nonce } = await res.json();
+
+  // 2. Sign with wallet via personal_sign
+  const signer = window._signer;
+  if (!signer) throw new Error("Wallet not connected");
+  const signature = await signer.signMessage(message);
+
+  return { signature, nonce };
+}
+
 // ── Audio ────────────────────────────────────────────────────────────────
 
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -1637,6 +1653,8 @@ let myStats = null;
 let myXUsername = null;
 let myWalletAddress = null;
 let myCustomStatus = null;
+let myWalletSignature = null;
+let myWalletNonce = null;
 let myContacts = []; // lowercase names of saved contacts
 let callTarget = null; // username from ?call= param
 let callTargetAutoDialed = false;
@@ -2609,6 +2627,12 @@ function cleanup() {
 // ── Socket.IO ────────────────────────────────────────────────────────────
 
 function connectSocket() {
+  // Prevent duplicate connections
+  if (socket) {
+    if (socket.connected) return;
+    socket.removeAllListeners();
+    socket.disconnect();
+  }
   socket = io(SERVER_URL, {
     reconnection: true, reconnectionAttempts: 10,
     reconnectionDelay: 1000, reconnectionDelayMax: 5000,
@@ -2622,7 +2646,7 @@ function connectSocket() {
     if (savedUserId && savedName) {
       socket.emit("register", { name: savedName, reconnectUserId: savedUserId, avatar: myAvatar, xUsername: savedX, walletAddress: savedWallet, sessionToken: localStorage.getItem("om_sessionToken") });
     } else if (myName) {
-      socket.emit("register", { name: myName, avatar: myAvatar, xUsername: myXUsername, walletAddress: myWalletAddress, sessionToken: localStorage.getItem("om_sessionToken") });
+      socket.emit("register", { name: myName, avatar: myAvatar, xUsername: myXUsername, walletAddress: myWalletAddress, walletSignature: myWalletSignature, walletNonce: myWalletNonce, sessionToken: localStorage.getItem("om_sessionToken") });
     }
   });
 
@@ -2632,6 +2656,7 @@ function connectSocket() {
     myStats = stats || null;
     myXUsername = xUsername || null;
     myWalletAddress = walletAddress || null;
+    myWalletSignature = null; myWalletNonce = null; // single-use
     localStorage.setItem("om_userId", userId);
     localStorage.setItem("om_name", name);
     if (xUsername) localStorage.setItem("om_xUsername", xUsername);
@@ -2669,13 +2694,33 @@ function connectSocket() {
     }
   });
 
+  socket.on("wallet-link-error", ({ message }) => {
+    showToast(message || "Wallet linking failed", "error");
+  });
+
   socket.on("wallet-linked", ({ walletAddress }) => {
     myWalletAddress = walletAddress;
     if (walletAddress) localStorage.setItem("om_walletAddress", walletAddress);
     updateLinkButtons();
   });
 
+  let registerRetried = false;
   socket.on("register-error", ({ message }) => {
+    const savedUserId = localStorage.getItem("om_userId");
+    const savedName = localStorage.getItem("om_name");
+    const isTaken = message && (message.includes("already taken") || message.includes("is claimed"));
+
+    // If name conflict on reconnect, retry once without reconnectUserId
+    // (server may have restarted and old userId is gone, but name + sessionToken still valid)
+    if (isTaken && savedUserId && savedName && !registerRetried) {
+      registerRetried = true;
+      const savedX = localStorage.getItem("om_xUsername") || myXUsername || null;
+      const savedWallet = localStorage.getItem("om_walletAddress") || myWalletAddress || null;
+      socket.emit("register", { name: savedName, avatar: myAvatar, xUsername: savedX, walletAddress: savedWallet, sessionToken: localStorage.getItem("om_sessionToken") });
+      return;
+    }
+
+    registerRetried = false;
     showScreen("login-screen");
     $("#login-error").textContent = message;
     $("#name-input").classList.add("error");
@@ -2997,12 +3042,22 @@ $("#wallet-login-btn").addEventListener("click", () => {
 
   // Set connect callback for login flow
   setWalletOnConnect([async () => {
-    myWalletAddress = window._connectedAddress;
-    localStorage.setItem("om_walletAddress", myWalletAddress);
-    // Resolve display name: .wei → .eth → truncated address
-    myName = await resolveWalletDisplayName(myWalletAddress);
-    localStorage.setItem("om_last_name", myName);
-    connectSocket();
+    try {
+      myWalletAddress = window._connectedAddress;
+      // Request signature to prove ownership
+      const { signature, nonce } = await requestWalletSignature(myWalletAddress);
+      myWalletSignature = signature;
+      myWalletNonce = nonce;
+      localStorage.setItem("om_walletAddress", myWalletAddress);
+      // Resolve display name: .wei → .eth → truncated address
+      myName = await resolveWalletDisplayName(myWalletAddress);
+      localStorage.setItem("om_last_name", myName);
+      connectSocket();
+    } catch (e) {
+      console.error("Wallet sign-in failed:", e);
+      showToast("Wallet verification failed — try again", "error");
+      if (typeof disconnectWallet === 'function') try { disconnectWallet(); } catch(e2) {}
+    }
   }]);
 
   showWalletModal();
@@ -3015,17 +3070,23 @@ $("#link-wallet-btn").addEventListener("click", () => {
   }
   document.getElementById('walletBtn').style.display = 'none';
 
-  setWalletOnConnect([() => {
-    myWalletAddress = window._connectedAddress;
-    localStorage.setItem("om_walletAddress", myWalletAddress);
-    if (socket) socket.emit("link-wallet", { walletAddress: myWalletAddress });
-    showToast("Wallet linked!", "success");
-    updateLinkButtons();
-    // Update display name
-    let nameHtml = escapeHtml(myName);
-    if (myXUsername) nameHtml += ` <span class="x-handle">@${escapeHtml(myXUsername)}</span>`;
-    nameHtml += ` <span class="wallet-handle">${myWalletAddress.slice(0,6)}...${myWalletAddress.slice(-4)}</span>`;
-    $("#my-name-display").innerHTML = nameHtml;
+  setWalletOnConnect([async () => {
+    try {
+      myWalletAddress = window._connectedAddress;
+      const { signature, nonce } = await requestWalletSignature(myWalletAddress);
+      localStorage.setItem("om_walletAddress", myWalletAddress);
+      if (socket) socket.emit("link-wallet", { walletAddress: myWalletAddress, walletSignature: signature, walletNonce: nonce });
+      showToast("Wallet linked!", "success");
+      updateLinkButtons();
+      let nameHtml = escapeHtml(myName);
+      if (myXUsername) nameHtml += ` <span class="x-handle">@${escapeHtml(myXUsername)}</span>`;
+      nameHtml += ` <span class="wallet-handle">${myWalletAddress.slice(0,6)}...${myWalletAddress.slice(-4)}</span>`;
+      $("#my-name-display").innerHTML = nameHtml;
+    } catch (e) {
+      console.error("Wallet linking failed:", e);
+      showToast("Wallet verification failed", "error");
+      if (typeof disconnectWallet === 'function') try { disconnectWallet(); } catch(e2) {}
+    }
   }]);
 
   showWalletModal();
@@ -3340,10 +3401,10 @@ window.addEventListener("load", async () => {
     // Hide login screen while reconnecting to avoid flash
     document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
     connectSocket();
-    // If reconnect fails after 3s, show login
+    // If reconnect fails after 5s, show login
     setTimeout(() => {
       if (!myUserId) showScreen("login-screen");
-    }, 3000);
+    }, 5000);
   }
 
   // Pre-fill name if saved
