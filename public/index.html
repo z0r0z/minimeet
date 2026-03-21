@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OneMinute — 60-Second Video Calls</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🕐</text></svg>">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
   <style>
@@ -31,77 +32,128 @@
       overflow: hidden;
     }
 
-    /* ── Screens ──────────────────────────────────────────── */
     .screen { display: none; height: 100vh; }
     .screen.active { display: flex; }
 
-    /* ── Login Screen ─────────────────────────────────────── */
+    /* ── Toast ─────────────────────────────────────────── */
+    .toast {
+      position: fixed; top: 20px; left: 50%;
+      transform: translateX(-50%) translateY(-100px);
+      background: #1E1E2A; border: 1px solid var(--border);
+      border-radius: 12px; padding: 12px 20px;
+      font-size: 14px; color: var(--text); z-index: 200;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      transition: transform 0.3s ease;
+      max-width: 90vw; text-align: center;
+    }
+    .toast.visible { transform: translateX(-50%) translateY(0); }
+    .toast.error { border-color: rgba(232,69,60,0.4); color: #ff8a84; }
+    .toast.success { border-color: rgba(74,222,128,0.4); color: #4ADE80; }
+
+    /* ── Avatar shared styles ─────────────────────────── */
+    .pfp-circle {
+      border-radius: 50%; overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+      background-size: cover; background-position: center;
+      flex-shrink: 0;
+    }
+
+    /* ── Login Screen ─────────────────────────────────── */
     #login-screen {
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-      gap: 24px;
+      align-items: center; justify-content: center;
+      flex-direction: column; gap: 20px;
       animation: fadeIn 0.5s ease;
     }
     .login-logo {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      margin-bottom: 8px;
+      display: flex; align-items: center; gap: 14px; margin-bottom: 8px;
     }
     .login-logo-icon {
-      width: 56px; height: 56px;
-      border-radius: 16px;
+      width: 56px; height: 56px; border-radius: 16px;
       background: rgba(232,69,60,0.12);
       border: 1px solid rgba(232,69,60,0.25);
       display: flex; align-items: center; justify-content: center;
     }
     .login-title {
-      font-family: var(--font-mono);
-      font-size: 32px; font-weight: 700;
+      font-family: var(--font-mono); font-size: 32px; font-weight: 700;
     }
     .login-subtitle {
       font-size: 13px; color: var(--text-muted);
       letter-spacing: 2px; text-transform: uppercase;
     }
+
+    /* Avatar picker */
+    .avatar-picker {
+      position: relative; cursor: pointer; margin-bottom: 4px;
+    }
+    .avatar-picker-circle {
+      width: 88px; height: 88px; border-radius: 50%;
+      background: var(--surface);
+      border: 2px dashed rgba(255,255,255,0.15);
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 4px;
+      transition: border-color 0.2s, background 0.2s;
+      overflow: hidden;
+      background-size: cover; background-position: center;
+    }
+    .avatar-picker:hover .avatar-picker-circle {
+      border-color: rgba(232,69,60,0.5);
+      background-color: rgba(255,255,255,0.06);
+    }
+    .avatar-picker-circle.has-image {
+      border-style: solid; border-color: rgba(74,222,128,0.4);
+    }
+    .avatar-picker-circle.has-image:hover {
+      border-color: rgba(232,69,60,0.5);
+    }
+    .avatar-picker-label {
+      font-size: 10px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .avatar-picker-overlay {
+      position: absolute; inset: 0; border-radius: 50%;
+      background: rgba(0,0,0,0.5);
+      display: none; align-items: center; justify-content: center;
+    }
+    .avatar-picker:hover .avatar-picker-overlay.has-img { display: flex; }
+    .avatar-picker input { display: none; }
+
     .login-input {
       width: 320px; padding: 14px 18px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      color: var(--text);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; color: var(--text);
       font-size: 16px; font-family: var(--font-body);
-      outline: none;
-      transition: border-color 0.2s;
+      outline: none; transition: border-color 0.2s;
     }
     .login-input:focus { border-color: rgba(232,69,60,0.5); }
     .login-input::placeholder { color: #444; }
+    .login-input.error { border-color: var(--red); }
+    .login-error {
+      font-size: 13px; color: var(--red); max-width: 320px;
+      text-align: center; min-height: 18px;
+    }
     .login-btn {
       width: 320px; padding: 14px;
-      background: var(--red);
-      border: none; border-radius: 14px;
+      background: var(--red); border: none; border-radius: 14px;
       color: #fff; font-size: 16px; font-weight: 600;
-      font-family: var(--font-body);
-      cursor: pointer;
+      font-family: var(--font-body); cursor: pointer;
       transition: transform 0.15s, box-shadow 0.2s;
     }
     .login-btn:hover {
       transform: translateY(-1px);
       box-shadow: 0 6px 24px rgba(232,69,60,0.4);
     }
+    .login-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-    /* ── Contacts Screen ──────────────────────────────────── */
+    /* ── Contacts Screen ──────────────────────────────── */
     #contacts-screen {
       flex-direction: column;
-      max-width: 500px;
-      margin: 0 auto;
-      padding: 32px 20px;
-      width: 100%;
+      max-width: 500px; margin: 0 auto;
+      padding: 32px 20px; width: 100%;
       animation: fadeIn 0.4s ease;
     }
     .header {
       display: flex; justify-content: space-between;
-      align-items: flex-start; margin-bottom: 24px;
+      align-items: flex-start; margin-bottom: 20px;
     }
     .header-left { display: flex; align-items: center; gap: 12px; }
     .logo-icon {
@@ -111,8 +163,7 @@
       display: flex; align-items: center; justify-content: center;
     }
     .logo-title {
-      font-family: var(--font-mono);
-      font-size: 22px; font-weight: 700;
+      font-family: var(--font-mono); font-size: 22px; font-weight: 700;
     }
     .logo-sub {
       font-size: 12px; color: var(--text-muted);
@@ -125,26 +176,56 @@
       border: 1px solid rgba(232,69,60,0.2);
       border-radius: 20px; padding: 6px 12px;
     }
+
+    .info-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px; gap: 12px;
+    }
+    .my-info {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .my-pfp {
+      width: 26px; height: 26px; cursor: pointer;
+      border: 1.5px solid rgba(255,255,255,0.15);
+      transition: border-color 0.2s;
+    }
+    .my-pfp:hover { border-color: var(--amber); }
     .my-name {
       font-size: 12px; color: var(--text-muted);
-      margin-bottom: 16px;
       font-family: var(--font-mono);
     }
     .my-name span { color: var(--green); font-weight: 700; }
-    .search-wrap {
-      position: relative; margin-bottom: 16px;
+    .info-right { display: flex; align-items: center; gap: 12px; }
+    .online-count {
+      font-size: 12px; color: var(--text-muted);
+      font-family: var(--font-mono);
+      display: flex; align-items: center; gap: 5px;
     }
+    .online-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green); animation: pulse 2s ease infinite;
+    }
+    .invite-btn {
+      font-size: 12px; color: var(--amber);
+      background: rgba(232,168,60,0.1);
+      border: 1px solid rgba(232,168,60,0.2);
+      border-radius: 8px; padding: 5px 10px;
+      font-family: var(--font-mono); font-weight: 700;
+      cursor: pointer; transition: all 0.2s;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .invite-btn:hover { background: rgba(232,168,60,0.2); }
+
+    .search-wrap { position: relative; margin-bottom: 16px; }
     .search-wrap svg {
       position: absolute; left: 14px; top: 50%;
       transform: translateY(-50%); pointer-events: none;
     }
     .search-input {
       width: 100%; padding: 12px 14px 12px 40px;
-      background: var(--surface);
-      border: 1px solid var(--border);
+      background: var(--surface); border: 1px solid var(--border);
       border-radius: 12px; color: var(--text);
-      font-size: 14px; font-family: var(--font-body);
-      outline: none;
+      font-size: 14px; font-family: var(--font-body); outline: none;
     }
     .search-input::placeholder { color: #444; }
     .contacts-list {
@@ -158,11 +239,12 @@
       animation: slideUp 0.4s ease both;
     }
     .contact-card:hover { background: var(--surface-hover); transform: translateX(4px); }
-    .contact-card.offline { opacity: 0.4; pointer-events: none; }
     .avatar {
       width: 44px; height: 44px; border-radius: 14px;
       display: flex; align-items: center; justify-content: center;
       position: relative; flex-shrink: 0;
+      overflow: hidden;
+      background-size: cover; background-position: center;
     }
     .avatar-text {
       font-family: var(--font-mono);
@@ -184,37 +266,33 @@
       color: var(--green); flex-shrink: 0;
     }
 
-    /* ── Incoming Call Modal ───────────────────────────────── */
+    /* ── Incoming Call Modal ───────────────────────────── */
     .incoming-overlay {
-      display: none;
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,0.7);
-      backdrop-filter: blur(8px);
-      align-items: center; justify-content: center;
-      z-index: 100;
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+      align-items: center; justify-content: center; z-index: 100;
       animation: fadeIn 0.3s ease;
     }
     .incoming-overlay.active { display: flex; }
     .incoming-card {
-      background: #16161F;
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 24px;
-      padding: 36px 48px;
+      background: #16161F; border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 24px; padding: 36px 48px;
       display: flex; flex-direction: column;
       align-items: center; gap: 16px;
       animation: slideUp 0.4s ease;
     }
     .incoming-avatar {
-      width: 80px; height: 80px; border-radius: 22px;
+      width: 80px; height: 80px; border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
-      position: relative;
+      position: relative; overflow: hidden;
+      background-size: cover; background-position: center;
     }
     .incoming-avatar .ring {
-      position: absolute; inset: 0; border-radius: 22px;
+      position: absolute; inset: -4px; border-radius: 50%;
       border: 2px solid rgba(255,255,255,0.3);
       animation: ringPulse 1.5s ease-out infinite;
     }
-    .incoming-avatar .ring:nth-child(2) { animation-delay: 0.5s; }
+    .incoming-avatar .ring:nth-child(3) { animation-delay: 0.5s; }
     .incoming-name { font-size: 20px; font-weight: 700; }
     .incoming-label { font-size: 13px; color: var(--text-muted); animation: pulse 2s ease infinite; }
     .incoming-actions { display: flex; gap: 20px; margin-top: 8px; }
@@ -227,103 +305,84 @@
     .decline-btn { background: var(--red); }
     .accept-btn:hover, .decline-btn:hover { transform: scale(1.08); }
 
-    /* ── Call Screen ───────────────────────────────────────── */
+    /* ── Call Screen ───────────────────────────────────── */
     #call-screen {
-      position: relative;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
+      position: relative; flex-direction: column;
+      align-items: center; justify-content: center;
       background: radial-gradient(ellipse at center, #15151F 0%, #0A0A0F 70%);
       animation: fadeIn 0.3s ease;
     }
     .remote-video-area {
-      width: 100%; height: 100%;
-      position: absolute; inset: 0;
+      width: 100%; height: 100%; position: absolute; inset: 0;
       display: flex; align-items: center; justify-content: center;
       flex-direction: column; gap: 12px;
     }
     #remote-video {
-      width: 100%; height: 100%;
-      object-fit: cover;
-      display: none;
+      width: 100%; height: 100%; object-fit: cover; display: none;
     }
     .remote-placeholder {
-      display: flex; flex-direction: column;
-      align-items: center; gap: 12px;
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
     }
     .remote-avatar {
-      width: 100px; height: 100px; border-radius: 28px;
+      width: 100px; height: 100px; border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
-      position: relative;
+      position: relative; overflow: hidden;
+      background-size: cover; background-position: center;
     }
     .remote-initials {
       font-family: var(--font-mono);
       font-size: 28px; font-weight: 700; color: #fff;
     }
     .remote-name {
-      font-size: 22px; font-weight: 700;
-      letter-spacing: -0.3px;
-      text-shadow: 0 2px 12px rgba(0,0,0,0.5);
-      z-index: 2;
+      font-size: 22px; font-weight: 700; letter-spacing: -0.3px;
+      text-shadow: 0 2px 12px rgba(0,0,0,0.5); z-index: 2;
     }
     .call-status-label {
       font-size: 14px; color: #888;
-      animation: pulse 2s ease infinite;
-      z-index: 2;
+      animation: pulse 2s ease infinite; z-index: 2;
     }
 
-    /* Timer */
     .timer-wrap {
       position: absolute; top: 24px; left: 50%;
-      transform: translateX(-50%);
-      z-index: 10;
+      transform: translateX(-50%); z-index: 10;
       display: flex; align-items: center; justify-content: center;
     }
     .timer-wrap.danger { animation: timerPulse 0.5s ease infinite; }
     .timer-svg { position: absolute; }
     .timer-text {
-      display: flex; flex-direction: column;
-      align-items: center; z-index: 1;
+      display: flex; flex-direction: column; align-items: center; z-index: 1;
     }
     .timer-digits {
       font-family: var(--font-mono);
-      font-size: 28px; font-weight: 700;
-      transition: color 0.5s;
+      font-size: 28px; font-weight: 700; transition: color 0.5s;
     }
     .timer-remaining {
       font-size: 9px; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 1.5px;
     }
 
-    /* Local video PIP */
     .local-video-wrap {
       position: absolute; bottom: 110px; right: 20px;
-      width: 130px; height: 174px;
-      border-radius: 16px; overflow: hidden;
-      background: #1A1A24;
+      width: 130px; height: 174px; border-radius: 16px;
+      overflow: hidden; background: #1A1A24;
       border: 2px solid rgba(255,255,255,0.1);
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      z-index: 10;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5); z-index: 10;
     }
     #local-video {
-      width: 100%; height: 100%;
-      object-fit: cover; transform: scaleX(-1);
+      width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);
     }
     .you-label {
       position: absolute; bottom: 6px; left: 8px;
       font-size: 10px; font-weight: 700;
-      color: rgba(255,255,255,0.7);
-      background: rgba(0,0,0,0.5);
+      color: rgba(255,255,255,0.7); background: rgba(0,0,0,0.5);
       padding: 2px 7px; border-radius: 6px;
       font-family: var(--font-mono);
       letter-spacing: 0.5px; text-transform: uppercase;
     }
 
-    /* Controls */
     .controls {
       position: absolute; bottom: 36px;
-      display: flex; gap: 16px; align-items: center;
-      z-index: 10;
+      display: flex; gap: 16px; align-items: center; z-index: 10;
     }
     .ctrl-btn {
       width: 50px; height: 50px; border-radius: 16px;
@@ -342,31 +401,29 @@
     }
     .end-btn:hover { transform: scale(1.06); }
 
-    /* ── Ended Screen ─────────────────────────────────────── */
+    /* ── Ended Screen ─────────────────────────────────── */
     #ended-screen {
       align-items: center; justify-content: center;
       flex-direction: column; gap: 16px;
       animation: fadeIn 0.4s ease;
     }
     .ended-avatar {
-      width: 80px; height: 80px; border-radius: 22px;
+      width: 80px; height: 80px; border-radius: 50%;
       display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      background-size: cover; background-position: center;
     }
     .ended-title {
-      font-family: var(--font-mono);
-      font-size: 24px; font-weight: 700;
+      font-family: var(--font-mono); font-size: 24px; font-weight: 700;
     }
     .ended-reason { font-size: 14px; color: #888; }
     .ended-stats {
-      display: flex; gap: 32px; margin-top: 8px;
-      padding: 16px 28px;
-      background: var(--surface);
-      border: 1px solid var(--border);
+      display: flex; gap: 32px; margin-top: 8px; padding: 16px 28px;
+      background: var(--surface); border: 1px solid var(--border);
       border-radius: 14px;
     }
     .stat-item {
-      display: flex; flex-direction: column;
-      align-items: center; gap: 4px;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
     }
     .stat-value {
       font-family: var(--font-mono);
@@ -379,21 +436,22 @@
     .ended-actions { display: flex; gap: 12px; margin-top: 16px; }
     .recall-btn {
       display: flex; align-items: center; gap: 8px;
-      padding: 12px 24px;
-      background: var(--red); border: none; border-radius: 12px;
+      padding: 12px 24px; background: var(--red);
+      border: none; border-radius: 12px;
       color: #fff; font-size: 14px; font-weight: 600;
       font-family: var(--font-body); cursor: pointer;
     }
     .back-btn {
-      padding: 12px 24px;
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
+      padding: 12px 24px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 12px;
       color: var(--text); font-size: 14px; font-weight: 500;
       font-family: var(--font-body); cursor: pointer;
     }
 
-    /* ── Animations ───────────────────────────────────────── */
+    /* Hidden file input for pfp change */
+    .hidden-input { display: none; }
+
+    /* ── Animations ───────────────────────────────────── */
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
     @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -402,6 +460,11 @@
   </style>
 </head>
 <body>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- Hidden file input for changing pfp from contacts screen -->
+  <input type="file" id="pfp-change-input" class="hidden-input" accept="image/*" />
 
   <!-- ══════════════ LOGIN SCREEN ══════════════ -->
   <div id="login-screen" class="screen active">
@@ -414,7 +477,27 @@
         <div class="login-subtitle">Every second counts</div>
       </div>
     </div>
+
+    <!-- Avatar Picker -->
+    <div class="avatar-picker" id="avatar-picker">
+      <div class="avatar-picker-circle" id="avatar-picker-circle">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="1.5" stroke-linecap="round" id="avatar-picker-icon">
+          <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/>
+          <circle cx="12" cy="7" r="4"/>
+        </svg>
+        <span class="avatar-picker-label" id="avatar-picker-label">Add photo</span>
+      </div>
+      <div class="avatar-picker-overlay" id="avatar-picker-overlay">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round">
+          <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+      </div>
+      <input type="file" id="avatar-input" accept="image/*" />
+    </div>
+
     <input type="text" id="name-input" class="login-input" placeholder="Enter your display name..." maxlength="30" />
+    <div class="login-error" id="login-error"></div>
     <button id="join-btn" class="login-btn">Join</button>
   </div>
 
@@ -432,7 +515,24 @@
       </div>
       <div class="timer-badge">⏱ 60s calls</div>
     </div>
-    <div class="my-name">Signed in as <span id="my-name-display"></span></div>
+
+    <div class="info-bar">
+      <div class="my-info">
+        <div class="pfp-circle my-pfp" id="my-pfp" title="Change profile picture"></div>
+        <div class="my-name">Signed in as <span id="my-name-display"></span></div>
+      </div>
+      <div class="info-right">
+        <div class="online-count">
+          <div class="online-dot"></div>
+          <span id="online-count-num">0</span> online
+        </div>
+        <button class="invite-btn" id="invite-btn">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          Invite
+        </button>
+      </div>
+    </div>
+
     <div class="search-wrap">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
       <input type="text" id="search-input" class="search-input" placeholder="Search online users..." />
@@ -529,34 +629,119 @@
 
 <script>
 // ═══════════════════════════════════════════════════════════════════════════
-// OneMinute Client — Socket.IO + WebRTC
+// OneMinute Client
 // ═══════════════════════════════════════════════════════════════════════════
 
 const CALL_DURATION = 60;
+const AVATAR_SIZE = 128; // px, thumbnails stored at this resolution
+const AVATAR_QUALITY = 0.7;
+
 const ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun.relay.metered.ca:80" },
+  { urls: "turn:global.relay.metered.ca:80", username: "e8dd65b92baa3dfa2dc6c999", credential: "kMOANraj9+YOgJFr" },
+  { urls: "turn:global.relay.metered.ca:80?transport=tcp", username: "e8dd65b92baa3dfa2dc6c999", credential: "kMOANraj9+YOgJFr" },
+  { urls: "turn:global.relay.metered.ca:443", username: "e8dd65b92baa3dfa2dc6c999", credential: "kMOANraj9+YOgJFr" },
+  { urls: "turns:global.relay.metered.ca:443?transport=tcp", username: "e8dd65b92baa3dfa2dc6c999", credential: "kMOANraj9+YOgJFr" },
 ];
 
-// Update this to your deployed server URL
 const SERVER_URL = window.location.origin;
+const COLORS = ["#E8453C","#3C7EE8","#E8A83C","#3CE88A","#A83CE8","#E83C8A","#3CE8E8","#8AE83C"];
 
-const COLORS = [
-  "#E8453C","#3C7EE8","#E8A83C","#3CE88A",
-  "#A83CE8","#E83C8A","#3CE8E8","#8AE83C",
-];
+// ── Avatar helpers ───────────────────────────────────────────────────────
+
+function resizeImage(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = AVATAR_SIZE;
+        canvas.height = AVATAR_SIZE;
+        const ctx = canvas.getContext("2d");
+        // Crop to square from center
+        const min = Math.min(img.width, img.height);
+        const sx = (img.width - min) / 2;
+        const sy = (img.height - min) / 2;
+        ctx.drawImage(img, sx, sy, min, min, 0, 0, AVATAR_SIZE, AVATAR_SIZE);
+        resolve(canvas.toDataURL("image/jpeg", AVATAR_QUALITY));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function getStoredAvatar() {
+  return localStorage.getItem("om_avatar") || null;
+}
+
+function storeAvatar(dataUrl) {
+  if (dataUrl) {
+    localStorage.setItem("om_avatar", dataUrl);
+  } else {
+    localStorage.removeItem("om_avatar");
+  }
+}
+
+// ── Audio ────────────────────────────────────────────────────────────────
+
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+let ringInterval = null;
+
+function playRingtone() {
+  stopRingtone();
+  try { audioCtx = new AudioCtx(); } catch { return; }
+  const freqs = [523.25, 659.25, 783.99];
+  let step = 0;
+  function playNote() {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freqs[step % freqs.length];
+    gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.4);
+    step++;
+  }
+  playNote();
+  ringInterval = setInterval(playNote, 600);
+}
+
+function stopRingtone() {
+  if (ringInterval) { clearInterval(ringInterval); ringInterval = null; }
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+}
+
+function playNotifSound() {
+  try {
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine"; osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.15);
+    setTimeout(() => ctx.close().catch(() => {}), 200);
+  } catch {}
+}
 
 // ── State ────────────────────────────────────────────────────────────────
 
 let socket = null;
 let myUserId = null;
 let myName = "";
+let myAvatar = null;
 let users = [];
 let currentCallId = null;
-let currentRemote = null; // { userId, name }
+let currentRemote = null; // { userId, name, avatar }
 let isCaller = false;
-
 let localStream = null;
 let peerConnection = null;
 let callTimer = null;
@@ -564,14 +749,21 @@ let timeLeft = CALL_DURATION;
 let isMuted = false;
 let isVideoOff = false;
 
-// ── DOM refs ─────────────────────────────────────────────────────────────
-
 const $ = (sel) => document.querySelector(sel);
-const loginScreen = $("#login-screen");
-const contactsScreen = $("#contacts-screen");
-const callScreen = $("#call-screen");
-const endedScreen = $("#ended-screen");
 const incomingOverlay = $("#incoming-overlay");
+
+// ── Toast ────────────────────────────────────────────────────────────────
+
+let toastTimeout = null;
+function showToast(msg, type = "info", duration = 3000) {
+  const toast = $("#toast");
+  toast.textContent = msg;
+  toast.className = `toast ${type} visible`;
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => toast.classList.remove("visible"), duration);
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 function showScreen(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
@@ -592,6 +784,31 @@ function formatTime(s) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+// Returns avatar HTML: either a background-image or colored initials
+function avatarBg(avatar, color) {
+  if (avatar) return `background-image:url(${avatar});background-color:transparent;`;
+  return `background:${color};`;
+}
+
+function avatarInner(avatar, initials, fontSize) {
+  if (avatar) return "";
+  return `<span class="avatar-text" style="font-size:${fontSize}px">${initials}</span>`;
+}
+
+// ── Title flash ──────────────────────────────────────────────────────────
+
+let titleFlashInterval = null;
+const originalTitle = document.title;
+function flashTitle(msg) {
+  stopFlashTitle();
+  let on = true;
+  titleFlashInterval = setInterval(() => { document.title = on ? msg : originalTitle; on = !on; }, 800);
+}
+function stopFlashTitle() {
+  if (titleFlashInterval) { clearInterval(titleFlashInterval); titleFlashInterval = null; }
+  document.title = originalTitle;
+}
+
 // ── Camera ───────────────────────────────────────────────────────────────
 
 async function startCamera() {
@@ -600,48 +817,28 @@ async function startCamera() {
     $("#local-video").srcObject = localStream;
   } catch (e) {
     console.warn("Camera access denied:", e);
+    showToast("Camera/mic access denied", "error");
   }
 }
 
 function stopCamera() {
-  if (localStream) {
-    localStream.getTracks().forEach(t => t.stop());
-    localStream = null;
-  }
+  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
 }
 
 // ── WebRTC ───────────────────────────────────────────────────────────────
 
 function createPeerConnection() {
   peerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
-  // Add local tracks
-  if (localStream) {
-    localStream.getTracks().forEach(track => {
-      peerConnection.addTrack(track, localStream);
-    });
-  }
-
-  // Handle remote stream
+  if (localStream) localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
   peerConnection.ontrack = (event) => {
-    const remoteVideo = $("#remote-video");
-    remoteVideo.srcObject = event.streams[0];
-    remoteVideo.style.display = "block";
+    const rv = $("#remote-video"); rv.srcObject = event.streams[0]; rv.style.display = "block";
     $("#remote-placeholder").style.display = "none";
   };
-
-  // Send ICE candidates
   peerConnection.onicecandidate = (event) => {
-    if (event.candidate && currentCallId) {
-      socket.emit("webrtc-ice-candidate", {
-        callId: currentCallId,
-        candidate: event.candidate,
-      });
-    }
+    if (event.candidate && currentCallId) socket.emit("webrtc-ice-candidate", { callId: currentCallId, candidate: event.candidate });
   };
-
   peerConnection.onconnectionstatechange = () => {
-    console.log("WebRTC state:", peerConnection.connectionState);
+    if (peerConnection.connectionState === "failed") showToast("Connection failed — try again", "error");
   };
 }
 
@@ -660,28 +857,13 @@ async function handleOffer(sdp) {
   socket.emit("webrtc-answer", { callId: currentCallId, sdp: answer });
 }
 
-async function handleAnswer(sdp) {
-  if (peerConnection) {
-    await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
-  }
-}
+async function handleAnswer(sdp) { if (peerConnection) await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp)); }
 
 async function handleIceCandidate(candidate) {
-  if (peerConnection) {
-    try {
-      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-    } catch (e) {
-      console.warn("ICE candidate error:", e);
-    }
-  }
+  if (peerConnection) { try { await peerConnection.addIceCandidate(new RTCIceCandidate(candidate)); } catch {} }
 }
 
-function closePeerConnection() {
-  if (peerConnection) {
-    peerConnection.close();
-    peerConnection = null;
-  }
-}
+function closePeerConnection() { if (peerConnection) { peerConnection.close(); peerConnection = null; } }
 
 // ── Timer ────────────────────────────────────────────────────────────────
 
@@ -689,22 +871,18 @@ function startTimer() {
   timeLeft = CALL_DURATION;
   $("#timer-wrap").style.display = "flex";
   updateTimerUI();
-
   callTimer = setInterval(() => {
     timeLeft--;
     updateTimerUI();
-    if (timeLeft <= 0) {
-      clearInterval(callTimer);
-    }
+    if (timeLeft === 10) playNotifSound();
+    if (timeLeft <= 0) clearInterval(callTimer);
   }, 1000);
 }
 
 function updateTimerUI() {
-  const circumference = 2 * Math.PI * 54;
-  const progress = timeLeft / CALL_DURATION;
-  const offset = circumference * (1 - progress);
+  const circ = 2 * Math.PI * 54;
+  const offset = circ * (1 - timeLeft / CALL_DURATION);
   const color = timeLeft <= 10 ? "#E8453C" : timeLeft <= 20 ? "#E8A83C" : "#4ADE80";
-
   $("#timer-ring").setAttribute("stroke-dashoffset", offset);
   $("#timer-ring").setAttribute("stroke", color);
   $("#timer-digits").textContent = formatTime(timeLeft);
@@ -712,12 +890,85 @@ function updateTimerUI() {
   $("#timer-wrap").className = timeLeft <= 10 ? "timer-wrap danger" : "timer-wrap";
 }
 
-function stopTimer() {
-  clearInterval(callTimer);
-  $("#timer-wrap").style.display = "none";
+function stopTimer() { clearInterval(callTimer); $("#timer-wrap").style.display = "none"; }
+
+// ── Login screen: avatar picker ──────────────────────────────────────────
+
+function updateLoginAvatar(dataUrl) {
+  const circle = $("#avatar-picker-circle");
+  const icon = $("#avatar-picker-icon");
+  const label = $("#avatar-picker-label");
+  const overlay = $("#avatar-picker-overlay");
+
+  if (dataUrl) {
+    circle.style.backgroundImage = `url(${dataUrl})`;
+    circle.classList.add("has-image");
+    icon.style.display = "none";
+    label.style.display = "none";
+    overlay.classList.add("has-img");
+  } else {
+    circle.style.backgroundImage = "";
+    circle.classList.remove("has-image");
+    icon.style.display = "";
+    label.style.display = "";
+    overlay.classList.remove("has-img");
+  }
 }
 
-// ── UI: Render Contacts ──────────────────────────────────────────────────
+// Load saved avatar into login picker on page load
+const savedAvatar = getStoredAvatar();
+if (savedAvatar) {
+  myAvatar = savedAvatar;
+  updateLoginAvatar(savedAvatar);
+}
+
+$("#avatar-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const dataUrl = await resizeImage(file);
+  myAvatar = dataUrl;
+  storeAvatar(dataUrl);
+  updateLoginAvatar(dataUrl);
+});
+
+$("#avatar-picker").addEventListener("click", () => {
+  $("#avatar-input").click();
+});
+
+// ── Contacts screen: my pfp display + change ─────────────────────────────
+
+function updateMyPfp() {
+  const el = $("#my-pfp");
+  const color = getColor(myName);
+  const initials = getInitials(myName);
+  if (myAvatar) {
+    el.style.backgroundImage = `url(${myAvatar})`;
+    el.style.background = `url(${myAvatar}) center/cover`;
+    el.innerHTML = "";
+  } else {
+    el.style.backgroundImage = "";
+    el.style.background = color;
+    el.innerHTML = `<span style="font-family:var(--font-mono);font-size:10px;font-weight:700;color:#fff">${initials}</span>`;
+  }
+}
+
+$("#my-pfp").addEventListener("click", () => {
+  $("#pfp-change-input").click();
+});
+
+$("#pfp-change-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const dataUrl = await resizeImage(file);
+  myAvatar = dataUrl;
+  storeAvatar(dataUrl);
+  updateMyPfp();
+  // Update server
+  if (socket) socket.emit("update-avatar", { avatar: dataUrl });
+  showToast("Profile picture updated!", "success");
+});
+
+// ── Render Contacts ──────────────────────────────────────────────────────
 
 function renderContacts(filter = "") {
   const list = $("#contacts-list");
@@ -727,7 +978,7 @@ function renderContacts(filter = "") {
 
   if (filtered.length === 0) {
     list.innerHTML = `<div style="text-align:center;color:#666;padding:40px;font-size:14px;">
-      ${users.length <= 1 ? "No other users online yet.<br>Open this page in another tab to test!" : "No matches found."}
+      ${users.length <= 1 ? 'No other users online yet.<br>Share the invite link to call someone!' : 'No matches found.'}
     </div>`;
     return;
   }
@@ -735,10 +986,12 @@ function renderContacts(filter = "") {
   list.innerHTML = filtered.map((user, i) => {
     const color = getColor(user.name);
     const initials = getInitials(user.name);
+    const bg = avatarBg(user.avatar, color);
+    const inner = avatarInner(user.avatar, initials, 13);
     return `
-      <div class="contact-card" style="animation-delay:${i * 0.05}s" onclick="callUser('${user.userId}','${user.name.replace(/'/g, "\\'")}')">
-        <div class="avatar" style="background:${color}">
-          <span class="avatar-text">${initials}</span>
+      <div class="contact-card" style="animation-delay:${i * 0.05}s" onclick="callUser('${user.userId}','${user.name.replace(/'/g, "\\'")}', ${user.avatar ? "'" + user.avatar.replace(/'/g, "\\'") + "'" : "null"})">
+        <div class="avatar" style="${bg}">
+          ${inner}
           <div class="status-dot" style="background:#4ADE80"></div>
         </div>
         <div class="contact-info">
@@ -752,77 +1005,122 @@ function renderContacts(filter = "") {
   }).join("");
 }
 
-// ── UI: Call screen setup ────────────────────────────────────────────────
+// ── Call UI ──────────────────────────────────────────────────────────────
 
-function setupCallUI(name, status) {
+function setupCallUI(name, avatar, status) {
   const color = getColor(name);
   const initials = getInitials(name);
-  $("#call-remote-avatar").style.background = color;
-  $("#call-remote-initials").textContent = initials;
+  const ra = $("#call-remote-avatar");
+  const ri = $("#call-remote-initials");
+
+  if (avatar) {
+    ra.style.backgroundImage = `url(${avatar})`;
+    ra.style.backgroundColor = "transparent";
+    ri.style.display = "none";
+  } else {
+    ra.style.backgroundImage = "";
+    ra.style.backgroundColor = color;
+    ri.style.display = "";
+    ri.textContent = initials;
+  }
+
   $("#call-remote-name").textContent = name;
   $("#call-status-label").textContent = status;
   $("#remote-video").style.display = "none";
   $("#remote-placeholder").style.display = "flex";
-  isMuted = false;
-  isVideoOff = false;
+  isMuted = false; isVideoOff = false;
   $("#mute-btn").classList.remove("active");
   $("#video-btn").classList.remove("active");
 }
 
-function setupEndedUI(name, reason, duration) {
+function setupEndedUI(name, avatar, reason, duration) {
   const color = getColor(name);
   const initials = getInitials(name);
-  $("#ended-avatar").style.background = color;
-  $("#ended-initials").textContent = initials;
+  const ea = $("#ended-avatar");
+  const ei = $("#ended-initials");
+
+  if (avatar) {
+    ea.style.backgroundImage = `url(${avatar})`;
+    ea.style.backgroundColor = "transparent";
+    ei.style.display = "none";
+  } else {
+    ea.style.backgroundImage = "";
+    ea.style.backgroundColor = color;
+    ei.style.display = "";
+    ei.textContent = initials;
+  }
+
   $("#ended-reason").textContent = reason;
   $("#ended-duration").textContent = formatTime(duration);
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────
 
-async function callUser(userId, name) {
-  currentRemote = { userId, name };
+async function callUser(userId, name, avatar) {
+  currentRemote = { userId, name, avatar: avatar || null };
   isCaller = true;
-  setupCallUI(name, "Calling...");
+  setupCallUI(name, avatar, "Calling...");
   showScreen("call-screen");
   await startCamera();
   socket.emit("call-user", { calleeId: userId });
 }
 
 function endCurrentCall() {
-  if (currentCallId) {
-    socket.emit("end-call", { callId: currentCallId });
-  }
+  if (currentCallId) socket.emit("end-call", { callId: currentCallId });
   cleanup();
   const duration = CALL_DURATION - timeLeft;
-  if (currentRemote) {
-    setupEndedUI(currentRemote.name, `Call with ${currentRemote.name} ended`, duration);
-  }
+  if (currentRemote) setupEndedUI(currentRemote.name, currentRemote.avatar, `Call with ${currentRemote.name} ended`, duration);
   showScreen("ended-screen");
 }
 
 function cleanup() {
-  stopTimer();
-  stopCamera();
-  closePeerConnection();
-  currentCallId = null;
-  isCaller = false;
+  stopTimer(); stopCamera(); closePeerConnection(); stopRingtone(); stopFlashTitle();
+  currentCallId = null; isCaller = false;
 }
 
 // ── Socket.IO ────────────────────────────────────────────────────────────
 
 function connectSocket() {
-  socket = io(SERVER_URL);
-
-  socket.on("connect", () => {
-    console.log("Connected to signaling server");
-    socket.emit("register", { name: myName });
+  socket = io(SERVER_URL, {
+    reconnection: true, reconnectionAttempts: 10,
+    reconnectionDelay: 1000, reconnectionDelayMax: 5000,
   });
 
-  socket.on("registered", ({ userId }) => {
+  socket.on("connect", () => {
+    const savedUserId = sessionStorage.getItem("om_userId");
+    const savedName = sessionStorage.getItem("om_name");
+    if (savedUserId && savedName) {
+      socket.emit("register", { name: savedName, reconnectUserId: savedUserId, avatar: myAvatar });
+    } else {
+      socket.emit("register", { name: myName, avatar: myAvatar });
+    }
+  });
+
+  socket.on("registered", ({ userId, name, reconnected, avatar: serverAvatar }) => {
     myUserId = userId;
-    $("#my-name-display").textContent = myName;
-    showScreen("contacts-screen");
+    myName = name;
+    sessionStorage.setItem("om_userId", userId);
+    sessionStorage.setItem("om_name", name);
+
+    // Sync avatar: if server has one and we don't locally, adopt it
+    if (serverAvatar && !myAvatar) {
+      myAvatar = serverAvatar;
+      storeAvatar(serverAvatar);
+    }
+
+    $("#my-name-display").textContent = name;
+    updateMyPfp();
+    if (reconnected) {
+      showToast("Reconnected!", "success");
+    } else {
+      showScreen("contacts-screen");
+    }
+  });
+
+  socket.on("register-error", ({ message }) => {
+    $("#login-error").textContent = message;
+    $("#name-input").classList.add("error");
+    $("#join-btn").disabled = false;
   });
 
   socket.on("user-list", (list) => {
@@ -830,78 +1128,74 @@ function connectSocket() {
     renderContacts($("#search-input").value);
   });
 
-  // ── Caller flow ──────────────────────────────────────────────────────
-  socket.on("call-ringing", ({ callId, calleeName }) => {
-    currentCallId = callId;
+  socket.on("online-count", (count) => {
+    $("#online-count-num").textContent = count;
   });
+
+  // Caller flow
+  socket.on("call-ringing", ({ callId }) => { currentCallId = callId; });
 
   socket.on("call-accepted", async ({ callId }) => {
     currentCallId = callId;
     $("#call-status-label").textContent = "Connected";
     startTimer();
-
-    // Caller creates the offer
-    if (isCaller) {
-      await createAndSendOffer();
-    }
+    if (isCaller) await createAndSendOffer();
   });
 
-  socket.on("call-declined", ({ callId }) => {
+  socket.on("call-declined", () => {
     cleanup();
-    if (currentRemote) {
-      setupEndedUI(currentRemote.name, `${currentRemote.name} declined the call`, 0);
-    }
+    if (currentRemote) setupEndedUI(currentRemote.name, currentRemote.avatar, `${currentRemote.name} declined the call`, 0);
     showScreen("ended-screen");
   });
 
-  socket.on("call-not-answered", ({ callId }) => {
+  socket.on("call-not-answered", () => {
     cleanup();
-    if (currentRemote) {
-      setupEndedUI(currentRemote.name, `${currentRemote.name} didn't answer`, 0);
-    }
+    if (currentRemote) setupEndedUI(currentRemote.name, currentRemote.avatar, `${currentRemote.name} didn't answer`, 0);
     showScreen("ended-screen");
   });
 
-  // ── Callee flow ──────────────────────────────────────────────────────
-  socket.on("incoming-call", ({ callId, callerId, callerName }) => {
+  // Callee flow
+  socket.on("incoming-call", ({ callId, callerId, callerName, callerAvatar }) => {
     currentCallId = callId;
-    currentRemote = { userId: callerId, name: callerName };
+    currentRemote = { userId: callerId, name: callerName, avatar: callerAvatar || null };
     isCaller = false;
 
     const color = getColor(callerName);
-    $("#incoming-avatar").style.background = color;
-    $("#incoming-initials").textContent = getInitials(callerName);
+    const ia = $("#incoming-avatar");
+    const ii = $("#incoming-initials");
+
+    if (callerAvatar) {
+      ia.style.backgroundImage = `url(${callerAvatar})`;
+      ia.style.backgroundColor = "transparent";
+      ii.style.display = "none";
+    } else {
+      ia.style.backgroundImage = "";
+      ia.style.backgroundColor = color;
+      ii.style.display = "";
+      ii.textContent = getInitials(callerName);
+    }
+
     $("#incoming-name").textContent = callerName;
     incomingOverlay.classList.add("active");
+    playRingtone();
+    flashTitle(`📞 ${callerName} is calling...`);
   });
 
   socket.on("call-cancelled", () => {
     incomingOverlay.classList.remove("active");
-    currentCallId = null;
-    currentRemote = null;
+    stopRingtone(); stopFlashTitle();
+    currentCallId = null; currentRemote = null;
   });
 
-  // ── WebRTC signaling ─────────────────────────────────────────────────
-  socket.on("webrtc-offer", async ({ callId, sdp }) => {
-    currentCallId = callId;
-    await startCamera();
-    await handleOffer(sdp);
-  });
+  // WebRTC signaling
+  socket.on("webrtc-offer", async ({ callId, sdp }) => { currentCallId = callId; await startCamera(); await handleOffer(sdp); });
+  socket.on("webrtc-answer", async ({ callId, sdp }) => { await handleAnswer(sdp); });
+  socket.on("webrtc-ice-candidate", async ({ callId, candidate }) => { await handleIceCandidate(candidate); });
 
-  socket.on("webrtc-answer", async ({ callId, sdp }) => {
-    await handleAnswer(sdp);
-  });
-
-  socket.on("webrtc-ice-candidate", async ({ callId, candidate }) => {
-    await handleIceCandidate(candidate);
-  });
-
-  // ── Call end events ──────────────────────────────────────────────────
-  socket.on("call-timeout", ({ callId }) => {
+  // Call end
+  socket.on("call-timeout", () => {
     cleanup();
-    if (currentRemote) {
-      setupEndedUI(currentRemote.name, "Your 60 seconds are up!", CALL_DURATION);
-    }
+    if (currentRemote) setupEndedUI(currentRemote.name, currentRemote.avatar, "Your 60 seconds are up!", CALL_DURATION);
     showScreen("ended-screen");
   });
 
@@ -909,7 +1203,7 @@ function connectSocket() {
     cleanup();
     incomingOverlay.classList.remove("active");
     if (currentRemote) {
-      setupEndedUI(currentRemote.name, `Call with ${currentRemote.name} ended`, duration);
+      setupEndedUI(currentRemote.name, currentRemote.avatar, `Call with ${currentRemote.name} ended`, duration);
       showScreen("ended-screen");
     } else {
       showScreen("contacts-screen");
@@ -917,13 +1211,13 @@ function connectSocket() {
   });
 
   socket.on("call-error", ({ message }) => {
-    alert(message);
+    showToast(message, "error");
     cleanup();
     showScreen("contacts-screen");
   });
 
   socket.on("disconnect", () => {
-    console.warn("Disconnected from server");
+    showToast("Connection lost — reconnecting...", "error", 5000);
   });
 }
 
@@ -933,22 +1227,39 @@ function connectSocket() {
 $("#join-btn").addEventListener("click", () => {
   const name = $("#name-input").value.trim();
   if (!name) return;
+  $("#login-error").textContent = "";
+  $("#name-input").classList.remove("error");
+  $("#join-btn").disabled = true;
   myName = name;
   connectSocket();
 });
-$("#name-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") $("#join-btn").click();
+$("#name-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#join-btn").click(); });
+$("#name-input").addEventListener("input", () => {
+  $("#login-error").textContent = "";
+  $("#name-input").classList.remove("error");
+  $("#join-btn").disabled = false;
 });
 
 // Search
-$("#search-input").addEventListener("input", (e) => {
-  renderContacts(e.target.value);
+$("#search-input").addEventListener("input", (e) => renderContacts(e.target.value));
+
+// Invite
+$("#invite-btn").addEventListener("click", () => {
+  navigator.clipboard.writeText(window.location.href).then(() => {
+    showToast("Invite link copied!", "success");
+  }).catch(() => {
+    const t = document.createElement("textarea");
+    t.value = window.location.href;
+    document.body.appendChild(t); t.select(); document.execCommand("copy"); document.body.removeChild(t);
+    showToast("Invite link copied!", "success");
+  });
 });
 
-// Incoming call buttons
+// Incoming call
 $("#accept-btn").addEventListener("click", async () => {
   incomingOverlay.classList.remove("active");
-  setupCallUI(currentRemote.name, "Connecting...");
+  stopRingtone(); stopFlashTitle();
+  setupCallUI(currentRemote.name, currentRemote.avatar, "Connecting...");
   showScreen("call-screen");
   await startCamera();
   socket.emit("accept-call", { callId: currentCallId });
@@ -956,9 +1267,9 @@ $("#accept-btn").addEventListener("click", async () => {
 
 $("#decline-btn").addEventListener("click", () => {
   incomingOverlay.classList.remove("active");
+  stopRingtone(); stopFlashTitle();
   socket.emit("decline-call", { callId: currentCallId });
-  currentCallId = null;
-  currentRemote = null;
+  currentCallId = null; currentRemote = null;
 });
 
 // Call controls
@@ -967,22 +1278,40 @@ $("#mute-btn").addEventListener("click", () => {
   if (localStream) localStream.getAudioTracks().forEach(t => t.enabled = !isMuted);
   $("#mute-btn").classList.toggle("active", isMuted);
 });
-
 $("#video-btn").addEventListener("click", () => {
   isVideoOff = !isVideoOff;
   if (localStream) localStream.getVideoTracks().forEach(t => t.enabled = !isVideoOff);
   $("#video-btn").classList.toggle("active", isVideoOff);
 });
-
 $("#end-call-btn").addEventListener("click", endCurrentCall);
 
-// Ended screen
+// Ended
 $("#recall-btn").addEventListener("click", () => {
-  if (currentRemote) callUser(currentRemote.userId, currentRemote.name);
+  if (currentRemote) callUser(currentRemote.userId, currentRemote.name, currentRemote.avatar);
 });
-$("#back-btn").addEventListener("click", () => {
-  currentRemote = null;
-  showScreen("contacts-screen");
+$("#back-btn").addEventListener("click", () => { currentRemote = null; showScreen("contacts-screen"); });
+
+// ── Auto-reconnect on refresh ────────────────────────────────────────────
+window.addEventListener("load", () => {
+  const savedAvatar = getStoredAvatar();
+  if (savedAvatar) myAvatar = savedAvatar;
+
+  const savedUserId = sessionStorage.getItem("om_userId");
+  const savedName = sessionStorage.getItem("om_name");
+  if (savedUserId && savedName) {
+    myName = savedName;
+    connectSocket();
+  }
+
+  // Pre-fill name if saved
+  const storedName = localStorage.getItem("om_last_name");
+  if (storedName) $("#name-input").value = storedName;
+});
+
+// Save name to localStorage for convenience
+const origJoinClick = $("#join-btn").onclick;
+$("#join-btn").addEventListener("click", () => {
+  localStorage.setItem("om_last_name", $("#name-input").value.trim());
 });
 </script>
 </body>
