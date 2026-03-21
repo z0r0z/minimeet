@@ -344,12 +344,13 @@
     .profile-back:hover { background: rgba(0,0,0,0.7); }
     .profile-banner-edit {
       position: absolute; bottom: 12px; right: 12px;
-      background: rgba(0,0,0,0.5); border: none; color: #fff;
-      width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      backdrop-filter: blur(4px); transition: background 0.2s;
+      background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+      color: #fff; width: 32px; height: 32px; border-radius: 50%; cursor: pointer;
+      display: none; align-items: center; justify-content: center;
+      backdrop-filter: blur(4px); transition: all 0.2s; z-index: 5;
     }
-    .profile-banner-edit:hover { background: rgba(0,0,0,0.7); }
+    .profile-banner-edit.visible { display: flex; }
+    .profile-banner-edit:hover { background: rgba(255,255,255,0.3); }
     .profile-header {
       padding: 0 20px; margin-top: -32px; position: relative;
     }
@@ -1537,6 +1538,7 @@
 
   <!-- Hidden file input for changing pfp from contacts screen -->
   <input type="file" id="pfp-change-input" class="hidden-input" accept="image/*" />
+  <input type="file" id="banner-file-input" style="display:none;" accept="image/*" />
 
   <!-- ══════════════ LOGIN SCREEN ══════════════ -->
   <div id="login-screen" class="screen active">
@@ -1744,7 +1746,7 @@
       <button class="profile-back" id="profile-back" onclick="window.history.pushState({},'','/');showScreen('contacts-screen')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
       </button>
-      <button class="profile-banner-edit" id="profile-banner-edit" onclick="editBanner()" style="display:none;" title="Change banner">
+      <button class="profile-banner-edit" id="profile-banner-edit" onclick="document.getElementById('banner-file-input').click()" title="Change banner">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
       </button>
     </div>
@@ -3040,6 +3042,17 @@ $("#pfp-change-input").addEventListener("change", async (e) => {
   showToast("Profile picture updated!", "success");
 });
 
+$("#banner-file-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  try {
+    const dataUrl = await resizeBanner(file);
+    if (socket) socket.emit("update-profile", { banner: dataUrl });
+    $("#profile-banner").style.backgroundImage = `url(${dataUrl})`;
+    showToast("Banner updated!", "success");
+  } catch (err) { showToast("Image failed to load", "error"); }
+  e.target.value = "";
+});
+
 // ── Render Contacts ──────────────────────────────────────────────────────
 
 // ── Contact metadata cache (persists across sessions) ────────────────────
@@ -3125,7 +3138,7 @@ function renderContactCard(user, i, isOffline) {
 
   return `
     <div class="${cardClass}" style="animation-delay:${i * 0.03}s" ${onclick}>
-      <div class="avatar" style="${bg}">
+      <div class="avatar" style="${bg};cursor:pointer" onclick="showProfile('${escapeHtml(user.name).replace(/'/g,"\\'")}');event.stopPropagation();">
         ${inner}
         <div class="status-dot" style="background:${dotColor}"></div>
       </div>
@@ -3662,6 +3675,15 @@ function connectSocket() {
     }
   });
 
+  socket.on("call-request-sent", ({ targetName }) => {
+    showToast(`📞 Call request sent to ${targetName}`, "success", 3000);
+  });
+
+  socket.on("call-request-online", ({ userId, name, avatar }) => {
+    // Target came online or was online — call them directly
+    callUser(userId, name, avatar);
+  });
+
   socket.on("call-error", ({ message }) => {
     showToast(message, "error");
     cleanup();
@@ -3899,6 +3921,7 @@ function connectSocket() {
     else if (notif.type === "reply") showToast(`${notif.fromUser} replied to your post`, "info", 2000);
     else if (notif.type === "poke") showToast(`${notif.fromUser} poked you 👋`, "info", 2000);
     else if (notif.type === "dm") showToast(`${notif.fromUser}: ${(notif.preview || "").slice(0, 40)}`, "info", 2000);
+    else if (notif.type === "call_request") showToast(`📞 ${notif.fromUser} wants to call you — check notifications`, "info", 5000);
   });
 
   socket.on("poke", ({ fromUserId, fromName, fromAvatar }) => {
@@ -4164,7 +4187,7 @@ function handleProfileData(data) {
   }
   // Show/hide banner edit button
   const bannerEdit = document.getElementById("profile-banner-edit");
-  if (bannerEdit) bannerEdit.style.display = profileIsOwn ? "" : "none";
+  if (bannerEdit) bannerEdit.classList.toggle("visible", profileIsOwn);
   $("#profile-name").textContent = data.displayName || data.username;
   let handleHtml = "";
   if (data.xUsername) handleHtml += `<a href="https://x.com/${escapeHtml(data.xUsername)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">@${escapeHtml(data.xUsername)}</a>`;
@@ -4222,6 +4245,8 @@ function handleProfileData(data) {
     actionsHtml += `<button class="profile-action-btn primary" onclick="openDM(${online?"'"+online.userId+"'":"null"},'${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}',${data.avatar?"'"+data.avatar.replace(/'/g,"\\'")+"'":"null"})">Message</button>`;
     if (online) {
       actionsHtml += `<button class="profile-action-btn primary" onclick="callUser('${online.userId}','${escapeHtml(online.name).replace(/'/g,"\\'")}',${online.avatar?"'"+online.avatar.replace(/'/g,"\\'")+"'":"null"})">Call</button>`;
+    } else {
+      actionsHtml += `<button class="profile-action-btn" onclick="callBackUser('${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')">Request Call</button>`;
     }
     actionsHtml += `<button class="link-btn" onclick="copyProfileLink('${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg> share</button>`;
   }
@@ -4409,7 +4434,12 @@ function renderNotifications(notifications) {
     else if (n.type === "reply") text = `<strong>${escapeHtml(n.fromUser)}</strong> replied: ${escapeHtml(n.preview || "")}`;
     else if (n.type === "dm") text = `<strong>${escapeHtml(n.fromUser)}</strong>: ${escapeHtml(n.preview || "")}`;
     else if (n.type === "poke") text = `<strong>${escapeHtml(n.fromUser)}</strong> poked you 👋`;
-    let onclick; if (n.postId) onclick = `showProfile(profileTarget||'${escapeHtml(myName).replace(/'/g,"\\'")}');showThread('${n.postId}')`; else if (n.type==="dm") onclick = `openDM(null,'${escapeHtml(n.fromUser).replace(/'/g,"\\'")}',null);document.getElementById('notif-panel').classList.remove('active')`; else onclick = `showProfile('${escapeHtml(n.fromUser).replace(/'/g,"\\'")}')`;
+    else if (n.type === "call_request") text = `<strong>${escapeHtml(n.fromUser)}</strong> wants to call you 📞`;
+    let onclick;
+    if (n.postId) onclick = `showProfile(profileTarget||'${escapeHtml(myName).replace(/'/g,"\\'")}');showThread('${n.postId}')`;
+    else if (n.type==="dm") onclick = `openDM(null,'${escapeHtml(n.fromUser).replace(/'/g,"\\'")}',null);document.getElementById('notif-panel').classList.remove('active')`;
+    else if (n.type==="call_request") onclick = `callBackUser('${escapeHtml(n.fromUser).replace(/'/g,"\\'")}');document.getElementById('notif-panel').classList.remove('active')`;
+    else onclick = `showProfile('${escapeHtml(n.fromUser).replace(/'/g,"\\'")}')`;
     return `<div class="notif-item${cls}" onclick="${onclick}">
       <div class="notif-item-text">${text}</div>
       <div class="notif-item-time">${timeAgo(n.createdAt)}</div>
@@ -4535,6 +4565,18 @@ function renderDirectory(filter = "") {
     list.innerHTML = html;
   }
 }
+
+window.callBackUser = function(name) {
+  // Try to call the user — if online, call directly; if offline, send call request
+  const online = users.find(u => u.name.toLowerCase() === name.toLowerCase());
+  if (online) {
+    callUser(online.userId, online.name, online.avatar);
+  } else {
+    // Send call request notification to them
+    if (socket) socket.emit("call-request", { targetName: name });
+    showToast(`${name} is offline — they'll get a notification`, "info", 3000);
+  }
+};
 
 window.copyProfileLink = function(name) {
   const url = `${window.location.origin}/?profile=${encodeURIComponent(name)}`;

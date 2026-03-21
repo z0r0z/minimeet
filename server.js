@@ -1359,7 +1359,7 @@ io.on("connection", (socket) => {
       if (!eu.customStatus) { const p = await dbGetProfile(eu.name); eu.customStatus = p.customStatus || null; }
       socket.emit("registered", { userId: reconnectUserId, name: eu.name, reconnected: true, avatar: resolvedAvatar, stats: eu.stats, xUsername: eu.xUsername || null, walletAddress: eu.walletAddress || null, customStatus: eu.customStatus || null, autoMeet: eu.autoMeet, cooldownHours: eu.cooldownHours });
       // Backfill directory for verified users
-      if (eu.xUsername || eu.walletAddress) dbAddToDirectory(eu.name, { displayName: eu.name, xUsername: eu.xUsername, walletAddress: eu.walletAddress, avatar: resolvedAvatar });
+      dbAddToDirectory(eu.name, { displayName: eu.name, xUsername: eu.xUsername, walletAddress: eu.walletAddress, avatar: resolvedAvatar });
       broadcastUserList();
       return;
     }
@@ -1458,9 +1458,8 @@ io.on("connection", (socket) => {
     console.log(`✅ ${trimmedName}${xUsername ? " (@" + xUsername + ")" : ""}${storedWallet ? " [" + storedWallet.slice(0,6) + "...]" : ""} registered as ${userId}`);
 
     // Add verified users (X or wallet) to the directory
-    if (xUsername || storedWallet) {
-      dbAddToDirectory(trimmedName, { displayName: trimmedName, xUsername: xUsername || null, walletAddress: storedWallet || null, avatar: resolvedAvatar });
-    }
+    // Add all users to directory (verified and guests)
+    dbAddToDirectory(trimmedName, { displayName: trimmedName, xUsername: xUsername || null, walletAddress: storedWallet || null, avatar: resolvedAvatar });
 
     // Claim wallet inbox: migrate DMs sent to the raw wallet address to this user's name
     if (storedWallet) {
@@ -2028,12 +2027,48 @@ io.on("connection", (socket) => {
     emitNotification(target.name, notif);
   });
 
-  socket.on("call-user", ({ calleeId }) => {
+  // Call request for offline users (by name)
+  socket.on("call-request", async ({ targetName }) => {
+    if (!rateLimit(socket, "call-request", 3, 60_000)) return;
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (!targetName || typeof targetName !== "string") return;
+    const key = targetName.toLowerCase().trim();
+    // Check if target is actually online
+    for (const [tId, tData] of onlineUsers) {
+      if (tData.name.toLowerCase() === key && !tData.disconnectedAt) {
+        // They're online — tell the client to call normally
+        socket.emit("call-request-online", { userId: tId, name: tData.name, avatar: tData.avatar || null });
+        return;
+      }
+    }
+    // Offline — create notification
+    const notif = await dbCreateNotification(key, "call_request", userData.name, null, null);
+    emitNotification(key, notif);
+    socket.emit("call-request-sent", { targetName });
+  });
+
+  socket.on("call-user", async ({ calleeId }) => {
     if (!rateLimit(socket, "call-user", 3, 10_000)) return; // 3 calls per 10s
     const callerId = socket.userId; if (!callerId) return;
     const caller = onlineUsers.get(callerId); if (!caller) return;
     const callee = onlineUsers.get(calleeId);
-    if (!callee || callee.disconnectedAt) { socket.emit("call-error", { message: "User is offline" }); return; }
+    if (!callee || callee.disconnectedAt) {
+      // User is offline — send a call request notification instead
+      // Find their name from the caller's knowledge or directory
+      let calleeName = null;
+      for (const [, d] of onlineUsers) { if (d.name) { /* scan */ } }
+      // Try to find by userId in takenNames reverse lookup
+      for (const [name, uid] of takenNames) { if (uid === calleeId) { calleeName = name; break; } }
+      if (calleeName) {
+        const notif = await dbCreateNotification(calleeName, "call_request", caller.name, null, null);
+        emitNotification(calleeName, notif);
+        socket.emit("call-error", { message: `${calleeName} is offline — they'll get a notification to call you back` });
+      } else {
+        socket.emit("call-error", { message: "User is offline" });
+      }
+      return;
+    }
     if (isUserInCall(calleeId) || isUserStreaming(calleeId)) { socket.emit("call-error", { message: `${callee.name} is busy` }); return; }
     if (isUserInCall(callerId) || isUserStreaming(callerId)) { socket.emit("call-error", { message: "You're already in a call or stream" }); return; }
 
@@ -2116,10 +2151,8 @@ io.on("connection", (socket) => {
     }
 
     userData.disconnectedAt = Date.now();
-    // Update last-seen in directory for verified users
-    if (userData.xUsername || userData.walletAddress) {
-      dbAddToDirectory(userData.name, { displayName: userData.name, xUsername: userData.xUsername, walletAddress: userData.walletAddress, avatar: userData.avatar });
-    }
+    // Update last-seen in directory for all users
+    dbAddToDirectory(userData.name, { displayName: userData.name, xUsername: userData.xUsername, walletAddress: userData.walletAddress, avatar: userData.avatar });
     broadcastUserList();
     const timer = setTimeout(async () => {
       for (const [callId, call] of activeCalls) {
@@ -2153,7 +2186,7 @@ async function getFullDirectory() {
   // Merge online verified users
   for (const [, data] of onlineUsers) {
     if (data.disconnectedAt) continue;
-    if (!data.xUsername && !data.walletAddress) continue;
+    // Include all users (verified and guests)
     if (dirNames.has(data.name.toLowerCase())) continue;
     dir.push({ name: data.name, xUsername: data.xUsername || null, walletAddress: data.walletAddress || null, avatar: data.avatar || null, lastSeen: Date.now() });
     dirNames.add(data.name.toLowerCase());
