@@ -256,8 +256,31 @@
       border: 2.5px solid var(--bg);
     }
     .contact-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-    .contact-name { font-size: 15px; font-weight: 500; }
-    .contact-status { font-size: 12px; color: var(--text-muted); }
+    .contact-name { font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+    .contact-status { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+
+    /* Pickup rate badge */
+    .pickup-badge {
+      font-family: var(--font-mono);
+      font-size: 10px; font-weight: 700;
+      padding: 1px 6px; border-radius: 6px;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
+    .pickup-badge.fire { background: rgba(232,69,60,0.15); color: #ff6b6b; }
+    .pickup-badge.good { background: rgba(74,222,128,0.12); color: #4ADE80; }
+    .pickup-badge.mid  { background: rgba(232,168,60,0.12); color: #E8A83C; }
+    .pickup-badge.low  { background: rgba(255,255,255,0.06); color: #666; }
+    .pickup-badge.new  { background: rgba(255,255,255,0.04); color: #555; }
+    .streak-icon { font-size: 11px; }
+
+    /* My stats bar */
+    .my-stats {
+      display: flex; align-items: center; gap: 8px;
+      font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+    }
+    .my-stats-item { display: flex; align-items: center; gap: 3px; }
+    .my-stats-item span { color: var(--text); font-weight: 700; }
     .call-btn {
       width: 36px; height: 36px; border-radius: 10px;
       background: rgba(74,222,128,0.1);
@@ -522,6 +545,7 @@
         <div class="my-name">Signed in as <span id="my-name-display"></span></div>
       </div>
       <div class="info-right">
+        <div class="my-stats" id="my-stats"></div>
         <div class="online-count">
           <div class="online-dot"></div>
           <span id="online-count-num">0</span> online
@@ -738,6 +762,7 @@ let socket = null;
 let myUserId = null;
 let myName = "";
 let myAvatar = null;
+let myStats = null;
 let users = [];
 let currentCallId = null;
 let currentRemote = null; // { userId, name, avatar }
@@ -751,6 +776,46 @@ let isVideoOff = false;
 
 const $ = (sel) => document.querySelector(sel);
 const incomingOverlay = $("#incoming-overlay");
+
+// ── Stats helpers ────────────────────────────────────────────────────────
+
+function pickupRate(stats) {
+  if (!stats || stats.received === 0) return null;
+  return Math.round((stats.accepted / stats.received) * 100);
+}
+
+function pickupBadgeHTML(stats) {
+  const rate = pickupRate(stats);
+  if (rate === null) return '<span class="pickup-badge new">NEW</span>';
+
+  let cls, emoji;
+  if (rate >= 90)      { cls = "fire"; emoji = "🔥"; }
+  else if (rate >= 70) { cls = "good"; emoji = "✅"; }
+  else if (rate >= 40) { cls = "mid";  emoji = "⚡"; }
+  else                 { cls = "low";  emoji = "😴"; }
+
+  let html = `<span class="pickup-badge ${cls}">${emoji} ${rate}%</span>`;
+
+  // Show streak if 3+
+  if (stats.streak >= 3) {
+    html += `<span class="streak-icon" title="${stats.streak} pickups in a row">🔥${stats.streak}</span>`;
+  }
+
+  return html;
+}
+
+function updateMyStats() {
+  const el = $("#my-stats");
+  if (!myStats || myStats.received === 0) {
+    el.innerHTML = "";
+    return;
+  }
+  const rate = pickupRate(myStats);
+  el.innerHTML = `
+    <div class="my-stats-item"><span>${rate}%</span> pickup</div>
+    ${myStats.streak >= 3 ? `<div class="my-stats-item">🔥<span>${myStats.streak}</span></div>` : ""}
+  `;
+}
 
 // ── Toast ────────────────────────────────────────────────────────────────
 
@@ -988,6 +1053,10 @@ function renderContacts(filter = "") {
     const initials = getInitials(user.name);
     const bg = avatarBg(user.avatar, color);
     const inner = avatarInner(user.avatar, initials, 13);
+    const badge = pickupBadgeHTML(user.stats);
+    const statsLine = user.stats && user.stats.received > 0
+      ? `${user.stats.accepted}/${user.stats.received} answered`
+      : "No calls yet";
     return `
       <div class="contact-card" style="animation-delay:${i * 0.05}s" onclick="callUser('${user.userId}','${user.name.replace(/'/g, "\\'")}', ${user.avatar ? "'" + user.avatar.replace(/'/g, "\\'") + "'" : "null"})">
         <div class="avatar" style="${bg}">
@@ -995,8 +1064,8 @@ function renderContacts(filter = "") {
           <div class="status-dot" style="background:#4ADE80"></div>
         </div>
         <div class="contact-info">
-          <span class="contact-name">${user.name}</span>
-          <span class="contact-status">Online</span>
+          <span class="contact-name">${user.name} ${badge}</span>
+          <span class="contact-status">${statsLine}</span>
         </div>
         <div class="call-btn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
@@ -1096,9 +1165,10 @@ function connectSocket() {
     }
   });
 
-  socket.on("registered", ({ userId, name, reconnected, avatar: serverAvatar }) => {
+  socket.on("registered", ({ userId, name, reconnected, avatar: serverAvatar, stats }) => {
     myUserId = userId;
     myName = name;
+    myStats = stats || null;
     sessionStorage.setItem("om_userId", userId);
     sessionStorage.setItem("om_name", name);
 
@@ -1110,6 +1180,7 @@ function connectSocket() {
 
     $("#my-name-display").textContent = name;
     updateMyPfp();
+    updateMyStats();
     if (reconnected) {
       showToast("Reconnected!", "success");
     } else {
@@ -1126,6 +1197,9 @@ function connectSocket() {
   socket.on("user-list", (list) => {
     users = list;
     renderContacts($("#search-input").value);
+    // Update own stats from the broadcast
+    const me = list.find(u => u.userId === myUserId);
+    if (me && me.stats) { myStats = me.stats; updateMyStats(); }
   });
 
   socket.on("online-count", (count) => {
