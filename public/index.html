@@ -2471,11 +2471,12 @@ function updateMyStats() {
   const el = $("#my-stats");
   if (!myStats) { el.innerHTML = ""; return; }
   const parts = [];
+  // Live social score
+  parts.push(`<div class="my-stats-item"><span id="social-score-display">${mySocialScoreBase.toLocaleString()}</span> score</div>`);
   if (myStats.totalMeets > 0) parts.push(`<div class="my-stats-item"><span>${myStats.totalMeets}</span> meets</div>`);
   if (myStats.received > 0) { const rate = pickupRate(myStats); parts.push(`<div class="my-stats-item"><span>${rate}%</span> pickup</div>`); }
   if (myStats.streak >= 3) parts.push(`<div class="my-stats-item">🔥<span>${myStats.streak}</span></div>`);
   if (myStats.totalOnlineMs > 60_000) parts.push(`<div class="my-stats-item"><span>${formatOnlineTime(myStats.totalOnlineMs)}</span> online</div>`);
-  if (myStats.creditSeconds > 0) parts.push(`<div class="my-stats-item"><span>${myStats.creditSeconds}s</span> credit</div>`);
   el.innerHTML = parts.join('<span style="opacity:0.3">·</span>');
 }
 
@@ -3452,9 +3453,9 @@ function setupCallUI(name, avatar, status) {
   isMuted = false; isVideoOff = false;
   $("#mute-btn").classList.remove("active");
   $("#video-btn").classList.remove("active");
-  // Show extend button if user has credit
+  // Always show extend button during calls — server validates pair credit
   const extBtn = document.getElementById("extend-call-btn");
-  if (extBtn) extBtn.style.display = (myStats?.creditSeconds > 0) ? "" : "none";
+  if (extBtn) extBtn.style.display = "";
 }
 
 function setupEndedUI(name, avatar, reason, duration) {
@@ -3585,6 +3586,7 @@ function connectSocket() {
     socket.emit("chat-history");
     resetIdleTimer();
     loadStats();
+    if (socket) socket.emit("get-social-score");
     loadDirectory(); // backfills contact pfps from directory
     if (socket) socket.emit("get-notifications");
     // Register E2E public key for encrypted DMs
@@ -3776,15 +3778,15 @@ function connectSocket() {
     const msg = creditEarned ? `Time's up! +${creditEarned}s credit earned` : "Your 60 seconds are up!";
     if (currentRemote) setupEndedUI(currentRemote.name, currentRemote.avatar, msg, CALL_DURATION);
     showScreen("ended-screen");
-    // Refresh stats to show new credit
-    if (socket) socket.emit("get-contacts");
+    // Refresh social score after call completes
+    if (socket) { socket.emit("get-contacts"); socket.emit("get-social-score"); }
   });
 
-  socket.on("call-extended", ({ callId, addedSeconds, byUser }) => {
+  socket.on("call-extended", ({ callId, addedSeconds, byUser, pairCreditRemaining }) => {
     if (callId !== currentCallId) return;
     timeLeft += addedSeconds;
     updateTimerUI();
-    showToast(`${byUser} added ${addedSeconds}s to the call`, "success", 2000);
+    showToast(`${byUser} added ${addedSeconds}s (${pairCreditRemaining}s pair credit left)`, "success", 2000);
   });
 
   socket.on("extend-error", ({ message }) => {
@@ -4038,6 +4040,12 @@ function connectSocket() {
   socket.on("notifications", ({ notifications, unreadCount }) => {
     updateNotifBadge(unreadCount);
     renderNotifications(notifications);
+  });
+
+  socket.on("social-score", (score) => {
+    updateSocialScoreBase(score.score);
+    startSocialScoreTicker();
+    updateMyStats();
   });
 
   socket.on("new-notification", (notif) => {
@@ -4352,11 +4360,15 @@ function handleProfileData(data) {
   $("#profile-bio").innerHTML = statusHtml + bioHtml;
 
   let statsHtml = "";
+  if (data.socialScore) {
+    statsHtml += `<div><span>${data.socialScore.score.toLocaleString()}</span> score</div>`;
+    // Update own score ticker if viewing own profile
+    if (profileIsOwn) { updateSocialScoreBase(data.socialScore.score); startSocialScoreTicker(); }
+  }
   if (data.postCount > 0) statsHtml += `<div><span>${data.postCount}</span> posts</div>`;
   if (data.stats?.totalMeets > 0) statsHtml += `<div><span>${data.stats.totalMeets}</span> meets</div>`;
   if (data.stats?.received > 0) statsHtml += `<div><span>${pickupRate(data.stats)}%</span> pickup</div>`;
   if (data.stats?.totalOnlineMs > 60_000) statsHtml += `<div><span>${formatOnlineTime(data.stats.totalOnlineMs)}</span> online</div>`;
-  if (data.stats?.creditSeconds > 0) statsHtml += `<div><span>${data.stats.creditSeconds}s</span> credit</div>`;
   $("#profile-stats-row").innerHTML = statsHtml;
 
   // Actions
@@ -4541,6 +4553,30 @@ window.showThread = function(postId) {
 // ── Notifications ───────────────────────────────────────────────────────
 
 let notifUnread = 0;
+
+// ── Live social score ticker ────────────────────────────────────────────
+let mySocialScoreBase = 0; // score from server at last sync
+let mySocialScoreStartTime = 0; // when we started ticking
+let socialScoreInterval = null;
+
+function startSocialScoreTicker() {
+  if (socialScoreInterval) clearInterval(socialScoreInterval);
+  mySocialScoreStartTime = Date.now();
+  socialScoreInterval = setInterval(() => {
+    if (isIdle) return; // only tick during active time
+    const elapsed = Math.floor((Date.now() - mySocialScoreStartTime) / 1000);
+    const current = mySocialScoreBase + elapsed;
+    const el = document.getElementById("social-score-display");
+    if (el) el.textContent = current.toLocaleString();
+  }, 1000);
+}
+
+function updateSocialScoreBase(score) {
+  mySocialScoreBase = score;
+  mySocialScoreStartTime = Date.now();
+  const el = document.getElementById("social-score-display");
+  if (el) el.textContent = score.toLocaleString();
+}
 
 function updateNotifBadge(count) {
   notifUnread = count;

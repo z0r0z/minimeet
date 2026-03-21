@@ -932,23 +932,41 @@ async function claimWalletInbox(walletAddress, userName, socket) {
 
 // ─── Pair meeting history ────────────────────────────────────────────────────
 
-async function dbRecordPairMeeting(nameA, nameB) {
+async function dbRecordPairMeeting(nameA, nameB, earnedSeconds = 30) {
   const pair = [nameA, nameB].map(n => n.toLowerCase().trim()).sort().join(":");
   if (supabase) {
     try {
-      const { data } = await supabase.from("pair_meetings").select("meet_count").eq("pair", pair).single();
+      const { data } = await supabase.from("pair_meetings").select("meet_count, credit_seconds").eq("pair", pair).single();
       if (data) {
-        await supabase.from("pair_meetings").update({ meet_count: data.meet_count + 1, last_met: new Date().toISOString() }).eq("pair", pair);
+        await supabase.from("pair_meetings").update({ meet_count: data.meet_count + 1, credit_seconds: (data.credit_seconds || 0) + earnedSeconds, last_met: new Date().toISOString() }).eq("pair", pair);
       } else {
-        await supabase.from("pair_meetings").insert({ pair, meet_count: 1, credit_seconds: 30, last_met: new Date().toISOString() });
+        await supabase.from("pair_meetings").insert({ pair, meet_count: 1, credit_seconds: earnedSeconds, last_met: new Date().toISOString() });
       }
     } catch (e) { console.warn("Pair meeting record error:", e.message); }
     return;
   }
   const stored = jsonGet("pair_meetings", pair);
   let pm; try { pm = stored ? JSON.parse(stored) : { meetCount: 0, creditSeconds: 0 }; } catch { pm = { meetCount: 0, creditSeconds: 0 }; }
-  pm.meetCount++; pm.creditSeconds += 30; pm.lastMet = Date.now();
+  pm.meetCount++; pm.creditSeconds += earnedSeconds; pm.lastMet = Date.now();
   jsonSet("pair_meetings", pair, JSON.stringify(pm));
+}
+
+async function dbSpendPairCredit(nameA, nameB, seconds) {
+  const pair = [nameA, nameB].map(n => n.toLowerCase().trim()).sort().join(":");
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("pair_meetings").select("credit_seconds").eq("pair", pair).single();
+      if (!data || (data.credit_seconds || 0) < seconds) return false;
+      await supabase.from("pair_meetings").update({ credit_seconds: data.credit_seconds - seconds }).eq("pair", pair);
+      return true;
+    } catch { return false; }
+  }
+  const stored = jsonGet("pair_meetings", pair);
+  let pm; try { pm = stored ? JSON.parse(stored) : { meetCount: 0, creditSeconds: 0 }; } catch { return false; }
+  if ((pm.creditSeconds || 0) < seconds) return false;
+  pm.creditSeconds -= seconds;
+  jsonSet("pair_meetings", pair, JSON.stringify(pm));
+  return true;
 }
 
 async function dbGetPairMeetings(nameA, nameB) {
@@ -962,6 +980,26 @@ async function dbGetPairMeetings(nameA, nameB) {
   }
   const stored = jsonGet("pair_meetings", pair);
   try { return stored ? JSON.parse(stored) : { meetCount: 0, creditSeconds: 0, lastMet: null }; } catch { return { meetCount: 0, creditSeconds: 0, lastMet: null }; }
+}
+
+async function dbGetSocialScore(name) {
+  const key = name.toLowerCase().trim();
+  const stats = await dbGetStats(key);
+  const onlineSeconds = Math.floor((stats.totalOnlineMs || 0) / 1000);
+  // Sum all pair credits this user has earned
+  let totalPairCredits = 0;
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("pair_meetings").select("credit_seconds").like("pair", `%${key.replace(/[%_\\]/g, "")}%`);
+      if (data) totalPairCredits = data.reduce((sum, r) => sum + (r.credit_seconds || 0), 0);
+    } catch {}
+  } else {
+    const store = jsonStores["pair_meetings"] || {};
+    for (const [pair, val] of Object.entries(store)) {
+      if (pair.includes(key)) { try { totalPairCredits += JSON.parse(val).creditSeconds || 0; } catch {} }
+    }
+  }
+  return { score: onlineSeconds + totalPairCredits, onlineSeconds, pairCredits: totalPairCredits, totalMeets: stats.totalMeets };
 }
 
 // ─── Last-call timestamps (per pair) ─────────────────────────────────────────
@@ -1976,7 +2014,8 @@ io.on("connection", (socket) => {
       const xProfile = await dbGetXProfile(xUsername);
       if (xProfile?.avatar) { avatar = xProfile.avatar; dbSetAvatar(key, avatar); }
     }
-    socket.emit("profile", { username: key, displayName, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, stats, postCount, customStatus: profile.customStatus || null });
+    const socialScore = await dbGetSocialScore(key);
+    socket.emit("profile", { username: key, displayName, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, stats, postCount, customStatus: profile.customStatus || null, socialScore });
   });
 
   socket.on("update-profile", async ({ bio, banner }) => {
@@ -1987,6 +2026,13 @@ io.on("connection", (socket) => {
     if (banner !== undefined) profile.banner = (typeof banner === "string" && banner.length <= 500_000) ? banner : null;
     await dbSetProfile(userData.name, profile);
     socket.emit("profile-updated", { bio: profile.bio, banner: profile.banner });
+  });
+
+  socket.on("get-social-score", async () => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const score = await dbGetSocialScore(userData.name);
+    socket.emit("social-score", score);
   });
 
   socket.on("get-notifications", async () => {
@@ -2159,36 +2205,44 @@ io.on("connection", (socket) => {
   });
 
   socket.on("extend-call", async ({ callId, seconds }) => {
+    if (!rateLimit(socket, "extend", 2, 5_000)) return; // max 2 extends per 5s
     const userId = socket.userId; if (!userId) return;
     const call = activeCalls.get(callId); if (!call || !call.startedAt) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
     const secs = Math.min(Math.max(parseInt(seconds) || 30, 10), 300); // 10-300 seconds
-    // Check user has enough credit
-    const stats = await dbGetStats(userData.name);
-    if ((stats.creditSeconds || 0) < secs) {
-      socket.emit("extend-error", { message: `Not enough credit (${stats.creditSeconds || 0}s available)` });
+    // Find the other user in this call
+    const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
+    const otherData = onlineUsers.get(otherUserId);
+    if (!otherData) { socket.emit("extend-error", { message: "Other user disconnected" }); return; }
+    // Check pair credit
+    const pairInfo = await dbGetPairMeetings(userData.name, otherData.name);
+    if ((pairInfo.creditSeconds || 0) < secs) {
+      socket.emit("extend-error", { message: `Not enough pair credit (${pairInfo.creditSeconds || 0}s available with ${otherData.name})` });
       return;
     }
-    // Deduct credit
-    stats.creditSeconds = (stats.creditSeconds || 0) - secs;
-    await dbSetStats(userData.name, stats);
-    // Extend the timer
+    // Deduct from pair credit
+    const spent = await dbSpendPairCredit(userData.name, otherData.name, secs);
+    if (!spent) { socket.emit("extend-error", { message: "Credit deduction failed" }); return; }
+    // Extend the timer — track total allowed duration
     if (call.timerId) clearTimeout(call.timerId);
-    const remaining = CALL_DURATION_MS - (Date.now() - call.startedAt) + (secs * 1000);
+    if (!call.totalDurationMs) call.totalDurationMs = CALL_DURATION_MS;
+    call.totalDurationMs += secs * 1000;
+    const elapsed = Date.now() - call.startedAt;
+    const remaining = call.totalDurationMs - elapsed;
     call.timerId = setTimeout(async () => {
       const callerData = onlineUsers.get(call.callerId);
       const calleeData = onlineUsers.get(call.calleeId);
-      if (callerData) { const cs = await dbGetStats(callerData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(callerData.name, cs); }
-      if (calleeData) { const cs = await dbGetStats(calleeData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(calleeData.name, cs); }
-      if (callerData && calleeData) dbRecordPairMeeting(callerData.name, calleeData.name);
+      // Award 30s pair credit (not per-user — prevents farming with fake accounts)
+      if (callerData && calleeData) await dbRecordPairMeeting(callerData.name, calleeData.name, 30);
       const s1 = getSocketByUserId(call.callerId); const s2 = getSocketByUserId(call.calleeId);
       if (s1) s1.emit("call-timeout", { callId, creditEarned: 30 }); if (s2) s2.emit("call-timeout", { callId, creditEarned: 30 });
       cleanupCall(callId);
     }, Math.max(remaining, 0));
     // Notify both users
     const s1 = getSocketByUserId(call.callerId); const s2 = getSocketByUserId(call.calleeId);
-    if (s1) s1.emit("call-extended", { callId, addedSeconds: secs, byUser: userData.name, newCreditBalance: userId === call.callerId ? stats.creditSeconds : null });
-    if (s2) s2.emit("call-extended", { callId, addedSeconds: secs, byUser: userData.name, newCreditBalance: userId === call.calleeId ? stats.creditSeconds : null });
+    const remainingCredit = (pairInfo.creditSeconds || 0) - secs;
+    if (s1) s1.emit("call-extended", { callId, addedSeconds: secs, byUser: userData.name, pairCreditRemaining: remainingCredit });
+    if (s2) s2.emit("call-extended", { callId, addedSeconds: secs, byUser: userData.name, pairCreditRemaining: remainingCredit });
   });
 
   socket.on("end-call", ({ callId }) => {
