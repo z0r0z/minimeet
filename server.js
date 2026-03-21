@@ -433,11 +433,12 @@ function jsonSet(store, key, value) {
 async function dbSavePublicMsg(msg) {
   if (supabase) {
     try {
-      await supabase.from("public_messages").insert({
-        id: msg.id, name: msg.name, avatar: msg.avatar,
-        x_username: msg.xUsername || null, wallet_address: msg.walletAddress || null,
-        text: msg.text, created_at: new Date(msg.ts).toISOString(),
-      });
+      const row = { id: msg.id, name: msg.name, avatar: msg.avatar, text: msg.text, created_at: new Date(msg.ts).toISOString() };
+      // Only include optional columns if they exist (avoids failing on older schemas)
+      if (msg.xUsername) row.x_username = msg.xUsername;
+      if (msg.walletAddress) row.wallet_address = msg.walletAddress;
+      const { error } = await supabase.from("public_messages").insert(row);
+      if (error) console.warn("Public msg write error:", error.message);
     } catch (e) { console.warn("Public msg write error:", e.message); }
     return;
   }
@@ -500,6 +501,45 @@ async function dbLoadReactions(msgIds) {
     if (stored) { try { result[id] = JSON.parse(stored); } catch {} }
   }
   return result;
+}
+
+// ─── DM persistence ─────────────────────────────────────────────────────────
+
+async function dbSaveDM(senderName, receiverName, msg) {
+  const pair = [senderName, receiverName].map(n => n.toLowerCase().trim()).sort().join(":");
+  if (supabase) {
+    try {
+      await supabase.from("direct_messages").insert({
+        id: msg.id, pair, sender: senderName.toLowerCase().trim(),
+        sender_name: msg.fromName, text: msg.text,
+        created_at: new Date(msg.ts).toISOString(),
+      });
+    } catch (e) { console.warn("DM write error:", e.message); }
+    return;
+  }
+  const stored = jsonGet("direct_messages", pair);
+  let msgs; try { msgs = stored ? JSON.parse(stored) : []; } catch { msgs = []; }
+  msgs.push({ id: msg.id, sender: senderName.toLowerCase().trim(), senderName: msg.fromName, text: msg.text, ts: msg.ts });
+  if (msgs.length > 100) msgs.splice(0, msgs.length - 100);
+  jsonSet("direct_messages", pair, JSON.stringify(msgs));
+}
+
+async function dbLoadDMs(nameA, nameB, limit = 50) {
+  const pair = [nameA, nameB].map(n => n.toLowerCase().trim()).sort().join(":");
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("direct_messages")
+        .select("*").eq("pair", pair)
+        .order("created_at", { ascending: false }).limit(limit);
+      if (data) return data.reverse().map(d => ({
+        id: d.id, sender: d.sender, senderName: d.sender_name, text: d.text, ts: new Date(d.created_at).getTime(),
+      }));
+    } catch (e) { console.warn("DM read error:", e.message); }
+    return [];
+  }
+  const stored = jsonGet("direct_messages", pair);
+  let msgs; try { msgs = stored ? JSON.parse(stored) : []; } catch { msgs = []; }
+  return msgs.slice(-limit);
 }
 
 // ─── Last-call timestamps (per pair) ─────────────────────────────────────────
@@ -1126,19 +1166,33 @@ io.on("connection", (socket) => {
     socket.emit("chat-stream-history", { streamId, messages: chat.slice(-50) });
   });
 
-  // P2P direct messages (ephemeral — not stored)
+  // P2P direct messages (persisted)
   socket.on("chat-dm", ({ toUserId, text }) => {
     if (!rateLimit(socket, "chat", 10, 10_000)) return;
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
-    const target = onlineUsers.get(toUserId); if (!target || target.disconnectedAt) return;
+    const target = onlineUsers.get(toUserId); if (!target) return;
     const trimmed = (text || "").trim().slice(0, 500);
     if (!trimmed) return;
     const msg = { id: uuidv4().slice(0, 10), fromUserId: userId, fromName: userData.name, fromAvatar: userData.avatar || null, text: trimmed, ts: Date.now() };
-    const ts = getSocketByUserId(toUserId);
-    if (ts) ts.emit("chat-dm", msg);
-    // Echo back to sender for display
+    // Deliver if online
+    if (!target.disconnectedAt) {
+      const ts = getSocketByUserId(toUserId);
+      if (ts) ts.emit("chat-dm", msg);
+    }
+    // Echo back to sender
     socket.emit("chat-dm-sent", { toUserId, toName: target.name, ...msg });
+    // Persist
+    dbSaveDM(userData.name, target.name, msg);
+  });
+
+  // DM history
+  socket.on("dm-history", async ({ peerName }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (!peerName || typeof peerName !== "string") return;
+    const messages = await dbLoadDMs(userData.name, peerName);
+    socket.emit("dm-history", { peerName, messages });
   });
 
   // Poke — lightweight nudge

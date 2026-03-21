@@ -885,11 +885,12 @@
     .chat-msg:hover { background: var(--surface); }
     .chat-msg:hover .chat-react-btn { opacity: 0.4; }
     .chat-react-btn {
-      opacity: 0; cursor: pointer; background: none; border: none;
-      font-size: 12px; padding: 0 2px; transition: opacity 0.15s;
+      opacity: 0; cursor: pointer; background: var(--surface); border: 1px solid var(--border);
+      font-size: 11px; padding: 2px 5px; transition: all 0.15s;
       color: var(--text-muted); flex-shrink: 0; margin-top: 2px;
+      border-radius: 6px; line-height: 1;
     }
-    .chat-react-btn:hover { opacity: 1 !important; }
+    .chat-react-btn:hover { opacity: 1 !important; background: var(--surface-hover); color: var(--text); }
     .chat-reactions {
       display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px;
     }
@@ -905,19 +906,25 @@
       font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
     }
     .chat-react-picker {
-      display: none; position: absolute; bottom: 100%; right: 0;
+      display: none; position: absolute; bottom: calc(100% + 4px); right: 0;
       background: #1a1a2e; border: 1px solid var(--border);
-      border-radius: 8px; padding: 4px; gap: 2px;
-      flex-direction: row; z-index: 10;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      border-radius: 10px; padding: 3px 4px; gap: 1px;
+      flex-direction: row; align-items: center; z-index: 10;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      animation: fadeIn 0.15s ease;
     }
     .chat-react-picker.active { display: flex; }
     .chat-react-picker button {
-      background: none; border: none; font-size: 16px;
-      cursor: pointer; padding: 4px 6px; border-radius: 4px;
-      transition: background 0.1s;
+      background: none; border: none; font-size: 15px;
+      cursor: pointer; padding: 4px 5px; border-radius: 6px;
+      transition: all 0.1s; line-height: 1;
     }
-    .chat-react-picker button:hover { background: var(--surface-hover); }
+    .chat-react-picker button:hover { background: var(--surface-hover); transform: scale(1.2); }
+    .chat-react-picker .picker-close {
+      font-size: 12px; color: var(--text-muted); padding: 4px 4px;
+      margin-left: 2px; border-left: 1px solid var(--border);
+    }
+    .chat-react-picker .picker-close:hover { color: var(--text); transform: none; }
     .chat-msg-pfp {
       width: 22px; height: 22px; border-radius: 50%;
       background-size: cover; background-position: center;
@@ -2130,7 +2137,7 @@ function renderChatMsg(msg, container) {
     </div>
     <button class="chat-react-btn" onclick="showReactPicker(event,'${msg.id}')">+</button>
     <div class="chat-react-picker" id="react-picker-${msg.id}">
-      ${REACT_EMOJIS.map(e => `<button onclick="toggleReaction('${msg.id}','${e}');event.stopPropagation();">${e}</button>`).join("")}
+      ${REACT_EMOJIS.map(e => `<button onclick="toggleReaction('${msg.id}','${e}');event.stopPropagation();">${e}</button>`).join("")}<button class="picker-close" onclick="event.stopPropagation();this.parentElement.classList.remove('active');">&times;</button>
     </div>`;
   container.appendChild(el);
   container.scrollTop = container.scrollHeight;
@@ -2199,12 +2206,14 @@ function openDM(userId, name, avatar) {
     pfp.innerHTML = `<span style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:#fff">${getInitials(name)}</span>`;
   }
   $("#dm-header-name").textContent = name;
-  // Render existing messages
+  // Render existing in-memory messages
   const msgs = dmMessages.get(userId) || [];
   const container = $("#dm-messages");
-  container.innerHTML = msgs.length === 0 ? '<div class="dm-empty">Send a message...</div>' : "";
+  container.innerHTML = msgs.length === 0 ? '<div class="dm-empty">Loading...</div>' : "";
   msgs.forEach(m => appendDMMsg(m, container));
   container.scrollTop = container.scrollHeight;
+  // Request persisted DM history from server
+  if (socket && name) socket.emit("dm-history", { peerName: name });
   // Show
   $("#dm-overlay").classList.add("active");
   $("#dm-input").focus();
@@ -3004,6 +3013,41 @@ function connectSocket() {
       appendDMMsg(entry);
     }
     playSendSound();
+  });
+
+  socket.on("dm-history", ({ peerName, messages }) => {
+    if (!messages || messages.length === 0) {
+      // If DM panel is open and empty, show placeholder
+      if (dmTargetName && dmTargetName.toLowerCase() === peerName.toLowerCase()) {
+        const container = $("#dm-messages");
+        if (container.querySelector(".dm-empty")) {
+          container.innerHTML = '<div class="dm-empty">Send a message...</div>';
+        }
+      }
+      return;
+    }
+    // Find the userId for this peer (may be online or offline)
+    const peer = users.find(u => u.name.toLowerCase() === peerName.toLowerCase());
+    const peerId = peer ? peer.userId : peerName;
+    // Merge with in-memory: history first, then append any newer in-memory messages
+    const existing = dmMessages.get(dmTargetUserId) || [];
+    const historyIds = new Set(messages.map(m => m.id));
+    const myNameLower = myName.toLowerCase().trim();
+    const historyEntries = messages.map(m => ({
+      text: m.text, ts: m.ts, sent: m.sender === myNameLower,
+    }));
+    // Keep in-memory messages not in history (newer ones)
+    const newer = existing.filter(e => !historyIds.has(e.id));
+    const merged = [...historyEntries, ...newer];
+    if (dmTargetUserId) dmMessages.set(dmTargetUserId, merged);
+    // Re-render if DM panel is open for this peer
+    if (dmTargetName && dmTargetName.toLowerCase() === peerName.toLowerCase()) {
+      const container = $("#dm-messages");
+      container.innerHTML = "";
+      merged.forEach(m => appendDMMsg(m, container));
+      if (merged.length === 0) container.innerHTML = '<div class="dm-empty">Send a message...</div>';
+      container.scrollTop = container.scrollHeight;
+    }
   });
 
   socket.on("poke", ({ fromUserId, fromName, fromAvatar }) => {
