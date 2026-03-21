@@ -467,6 +467,41 @@ async function dbLoadPublicMsgs(limit = 50) {
   return msgs.slice(-limit);
 }
 
+async function dbSaveReaction(msgId, reactions) {
+  if (supabase) {
+    try {
+      await supabase.from("chat_reactions").upsert({
+        msg_id: msgId,
+        reactions: JSON.stringify(reactions),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (e) { console.warn("Reaction write error:", e.message); }
+    return;
+  }
+  jsonSet("chat_reactions", msgId, JSON.stringify(reactions));
+}
+
+async function dbLoadReactions(msgIds) {
+  if (!msgIds || msgIds.length === 0) return {};
+  const result = {};
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("chat_reactions").select("msg_id, reactions").in("msg_id", msgIds);
+      if (data) {
+        for (const row of data) {
+          try { result[row.msg_id] = JSON.parse(row.reactions); } catch {}
+        }
+      }
+    } catch (e) { console.warn("Reaction read error:", e.message); }
+    return result;
+  }
+  for (const id of msgIds) {
+    const stored = jsonGet("chat_reactions", id);
+    if (stored) { try { result[id] = JSON.parse(stored); } catch {} }
+  }
+  return result;
+}
+
 // ─── Last-call timestamps (per pair) ─────────────────────────────────────────
 
 async function dbGetLastCall(nameA, nameB) {
@@ -1040,6 +1075,25 @@ io.on("connection", (socket) => {
     dbSavePublicMsg(msg); // persist (non-blocking)
   });
 
+  socket.on("chat-react", async ({ msgId, emoji }) => {
+    if (!rateLimit(socket, "react", 20, 10_000)) return;
+    const userId = socket.userId; if (!userId) return;
+    if (!msgId || !emoji || typeof emoji !== "string" || emoji.length > 4) return;
+    // Find the message in publicChat
+    const msg = publicChat.find(m => m.id === msgId);
+    if (!msg) return;
+    if (!msg.reactions) msg.reactions = {};
+    // Toggle: if user already reacted with this emoji, remove it; otherwise set it
+    if (msg.reactions[userId] === emoji) {
+      delete msg.reactions[userId];
+    } else {
+      msg.reactions[userId] = emoji;
+    }
+    io.emit("chat-react", { msgId, reactions: msg.reactions });
+    // Persist reactions
+    dbSaveReaction(msgId, msg.reactions);
+  });
+
   socket.on("chat-history", () => {
     socket.emit("chat-history", publicChat.slice(-50));
   });
@@ -1288,6 +1342,13 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, async () => {
   // Load persisted public chat into memory
   const savedMsgs = await dbLoadPublicMsgs(MAX_CHAT_HISTORY);
+  // Load reactions for all saved messages
+  if (savedMsgs.length > 0) {
+    const reactions = await dbLoadReactions(savedMsgs.map(m => m.id));
+    for (const msg of savedMsgs) {
+      if (reactions[msg.id]) msg.reactions = reactions[msg.id];
+    }
+  }
   publicChat.push(...savedMsgs);
   console.log(`\n  📞 minimeet.cc on http://localhost:${PORT} | DB: ${supabase ? "Supabase" : "JSON"} | X OAuth: ${X_CLIENT_ID ? "✅" : "❌"} | Chat: ${savedMsgs.length} msgs loaded\n`);
 });

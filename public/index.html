@@ -883,6 +883,41 @@
       animation: slideUp 0.2s ease;
     }
     .chat-msg:hover { background: var(--surface); }
+    .chat-msg:hover .chat-react-btn { opacity: 0.4; }
+    .chat-react-btn {
+      opacity: 0; cursor: pointer; background: none; border: none;
+      font-size: 12px; padding: 0 2px; transition: opacity 0.15s;
+      color: var(--text-muted); flex-shrink: 0; margin-top: 2px;
+    }
+    .chat-react-btn:hover { opacity: 1 !important; }
+    .chat-reactions {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px;
+    }
+    .chat-reaction {
+      display: flex; align-items: center; gap: 2px;
+      font-size: 12px; padding: 1px 6px; border-radius: 10px;
+      background: var(--surface); border: 1px solid var(--border);
+      cursor: pointer; transition: all 0.15s; line-height: 1.4;
+    }
+    .chat-reaction:hover { border-color: rgba(255,255,255,0.2); }
+    .chat-reaction.mine { border-color: rgba(232,69,60,0.4); background: rgba(232,69,60,0.08); }
+    .chat-reaction-count {
+      font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
+    }
+    .chat-react-picker {
+      display: none; position: absolute; bottom: 100%; right: 0;
+      background: #1a1a2e; border: 1px solid var(--border);
+      border-radius: 8px; padding: 4px; gap: 2px;
+      flex-direction: row; z-index: 10;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    .chat-react-picker.active { display: flex; }
+    .chat-react-picker button {
+      background: none; border: none; font-size: 16px;
+      cursor: pointer; padding: 4px 6px; border-radius: 4px;
+      transition: background 0.1s;
+    }
+    .chat-react-picker button:hover { background: var(--surface-hover); }
     .chat-msg-pfp {
       width: 22px; height: 22px; border-radius: 50%;
       background-size: cover; background-position: center;
@@ -2059,6 +2094,22 @@ function chatDisplayName(msg) {
   return display;
 }
 
+const REACT_EMOJIS = ["👍", "❤️", "😂", "🔥", "👀", "🙏"];
+
+function renderReactions(msgId, reactions) {
+  if (!reactions || Object.keys(reactions).length === 0) return "";
+  // Aggregate: { emoji: [userIds] }
+  const counts = {};
+  for (const [userId, emoji] of Object.entries(reactions)) {
+    if (!counts[emoji]) counts[emoji] = [];
+    counts[emoji].push(userId);
+  }
+  return '<div class="chat-reactions">' + Object.entries(counts).map(([emoji, uids]) => {
+    const mine = uids.includes(myUserId) ? " mine" : "";
+    return `<span class="chat-reaction${mine}" data-msg-id="${msgId}" data-emoji="${emoji}" onclick="toggleReaction('${msgId}','${emoji}')">${emoji}<span class="chat-reaction-count">${uids.length}</span></span>`;
+  }).join("") + '</div>';
+}
+
 function renderChatMsg(msg, container) {
   const color = getColor(msg.name);
   const initials = getInitials(msg.name);
@@ -2067,16 +2118,43 @@ function renderChatMsg(msg, container) {
 
   const el = document.createElement("div");
   el.className = "chat-msg";
+  el.dataset.msgId = msg.id;
+  el.style.position = "relative";
   el.innerHTML = `
     <div class="chat-msg-pfp" style="${bg}">${inner}</div>
     <div class="chat-msg-body">
       <span class="chat-msg-name" style="color:${color}">${chatDisplayName(msg)}</span>
       <span class="chat-msg-time">${formatChatTime(msg.ts)}</span>
       <div class="chat-msg-text">${escapeHtml(msg.text)}</div>
+      ${renderReactions(msg.id, msg.reactions)}
+    </div>
+    <button class="chat-react-btn" onclick="showReactPicker(event,'${msg.id}')">+</button>
+    <div class="chat-react-picker" id="react-picker-${msg.id}">
+      ${REACT_EMOJIS.map(e => `<button onclick="toggleReaction('${msg.id}','${e}');event.stopPropagation();">${e}</button>`).join("")}
     </div>`;
   container.appendChild(el);
   container.scrollTop = container.scrollHeight;
 }
+
+window.showReactPicker = function(e, msgId) {
+  e.stopPropagation();
+  // Close any other open picker
+  document.querySelectorAll(".chat-react-picker.active").forEach(p => p.classList.remove("active"));
+  const picker = document.getElementById("react-picker-" + msgId);
+  if (picker) picker.classList.toggle("active");
+};
+
+// Close picker on click outside
+document.addEventListener("click", () => {
+  document.querySelectorAll(".chat-react-picker.active").forEach(p => p.classList.remove("active"));
+});
+
+window.toggleReaction = function(msgId, emoji) {
+  if (!socket || !myUserId) return;
+  socket.emit("chat-react", { msgId, emoji });
+  // Close picker
+  document.querySelectorAll(".chat-react-picker.active").forEach(p => p.classList.remove("active"));
+};
 
 function escapeHtml(text) {
   const div = document.createElement("div");
@@ -2865,6 +2943,17 @@ function connectSocket() {
       badge.textContent = chatUnread;
       badge.style.display = "inline";
     }
+  });
+
+  socket.on("chat-react", ({ msgId, reactions }) => {
+    // Update the reactions display for this message
+    const msgEl = document.querySelector(`.chat-msg[data-msg-id="${msgId}"]`);
+    if (!msgEl) return;
+    const body = msgEl.querySelector(".chat-msg-body");
+    const existing = body.querySelector(".chat-reactions");
+    if (existing) existing.remove();
+    const html = renderReactions(msgId, reactions);
+    if (html) body.insertAdjacentHTML("beforeend", html);
   });
 
   socket.on("chat-history", (messages) => {
