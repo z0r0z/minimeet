@@ -745,6 +745,19 @@ async function dbGetPostLikes(postId) {
   return likes.filter(l => l.postId === postId).map(l => l.userName);
 }
 
+async function dbGetGlobalFeed(limit = 30) {
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("posts").select("*").is("parent_id", null).order("created_at", { ascending: false }).limit(limit);
+      return (data || []).map(d => ({ id: d.id, author: d.author, text: d.text, parentId: d.parent_id, rootId: d.root_id, likeCount: d.like_count || 0, replyCount: d.reply_count || 0, createdAt: new Date(d.created_at).getTime() }));
+    } catch (e) { console.warn("Global feed error:", e.message); }
+    return [];
+  }
+  const stored = jsonGet("posts", "_all");
+  let posts; try { posts = stored ? JSON.parse(stored) : []; } catch { posts = []; }
+  return posts.filter(p => !p.parentId).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+}
+
 // ─── Notifications ──────────────────────────────────────────────────────────
 
 async function dbCreateNotification(recipient, type, fromUser, postId, preview) {
@@ -879,7 +892,6 @@ async function dbSetPrefs(name, prefs) {
 
 // ─── Session tokens (guest identity protection) ─────────────────────────────
 
-const sessionTokens = new Map(); // lowercase name -> token hash
 
 function hashToken(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -1243,6 +1255,8 @@ io.on("connection", (socket) => {
       eu.cooldownHours = prefs.cooldownHours;
       if (!eu.customStatus) { const p = await dbGetProfile(eu.name); eu.customStatus = p.customStatus || null; }
       socket.emit("registered", { userId: reconnectUserId, name: eu.name, reconnected: true, avatar: resolvedAvatar, stats: eu.stats, xUsername: eu.xUsername || null, walletAddress: eu.walletAddress || null, customStatus: eu.customStatus || null, autoMeet: eu.autoMeet, cooldownHours: eu.cooldownHours });
+      // Backfill directory for verified users
+      if (eu.xUsername || eu.walletAddress) dbAddToDirectory(eu.name, { displayName: eu.name, xUsername: eu.xUsername, walletAddress: eu.walletAddress, avatar: resolvedAvatar });
       broadcastUserList();
       return;
     }
@@ -1665,10 +1679,12 @@ io.on("connection", (socket) => {
     if (!username || typeof username !== "string") return;
     const result = await dbGetUserPosts(username, limit || 20, offset || 0);
     // Enrich with author info
+    const userData = socket.userId ? onlineUsers.get(socket.userId) : null;
+    const myNameLower = userData ? userData.name.toLowerCase() : "";
     for (const post of result.posts) {
       const likers = await dbGetPostLikes(post.id);
       post.likers = likers;
-      post.liked = myName ? likers.includes(socket.userId ? onlineUsers.get(socket.userId)?.name?.toLowerCase() : "") : false;
+      post.liked = myNameLower ? likers.includes(myNameLower) : false;
     }
     socket.emit("user-posts", { username, ...result });
   });
@@ -1682,18 +1698,68 @@ io.on("connection", (socket) => {
     socket.emit("thread", { postId, posts: thread });
   });
 
+  socket.on("get-global-feed", async ({ limit }) => {
+    const posts = await dbGetGlobalFeed(limit || 30);
+    const userData = socket.userId ? onlineUsers.get(socket.userId) : null;
+    const myNameLower = userData ? userData.name.toLowerCase() : "";
+    for (const post of posts) {
+      const likers = await dbGetPostLikes(post.id);
+      post.likers = likers;
+      post.liked = likers.includes(myNameLower);
+      // Enrich with author avatar/name from directory
+      post.authorAvatar = await dbGetAvatar(post.author) || null;
+      post.authorName = post.author;
+    }
+    socket.emit("global-feed", { posts });
+  });
+
   socket.on("get-profile", async ({ username }) => {
     if (!username || typeof username !== "string") return;
     const key = username.toLowerCase().trim();
     const profile = await dbGetProfile(key);
     const stats = await dbGetStats(key);
-    const avatar = await dbGetAvatar(key);
+    let avatar = await dbGetAvatar(key);
     const wallet = await dbGetWallet(key);
     const { total: postCount } = await dbGetUserPosts(key, 0, 0);
-    // Find xUsername from directory or online users
+    // Find xUsername + avatar from online users, then directory, then x_profiles
     let xUsername = null;
-    for (const [, d] of onlineUsers) { if (d.name.toLowerCase() === key) { xUsername = d.xUsername; break; } }
-    socket.emit("profile", { username: key, displayName: username, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, stats, postCount });
+    let displayName = username;
+    for (const [, d] of onlineUsers) {
+      if (d.name.toLowerCase() === key) {
+        xUsername = d.xUsername; if (d.avatar && !avatar) avatar = d.avatar;
+        displayName = d.name; break;
+      }
+    }
+    // Fallback: check directory for offline users
+    if (!xUsername || !avatar) {
+      if (supabase) {
+        try {
+          const { data } = await supabase.from("user_directory").select("*").eq("name", key).single();
+          if (data) {
+            if (!xUsername) xUsername = data.x_username || null;
+            if (!avatar) avatar = data.avatar || null;
+            displayName = data.display_name || username;
+          }
+        } catch {}
+      } else {
+        const stored = jsonGet("user_directory", "_all");
+        try {
+          const dir = stored ? JSON.parse(stored) : {};
+          const entry = dir[key];
+          if (entry) {
+            if (!xUsername) xUsername = entry.xUsername || null;
+            if (!avatar) avatar = entry.avatar || null;
+            displayName = entry.displayName || username;
+          }
+        } catch {}
+      }
+    }
+    // Final fallback: check x_profiles for avatar
+    if (!avatar && xUsername) {
+      const xProfile = await dbGetXProfile(xUsername);
+      if (xProfile?.avatar) avatar = xProfile.avatar;
+    }
+    socket.emit("profile", { username: key, displayName, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, stats, postCount });
   });
 
   socket.on("update-profile", async ({ bio, banner }) => {
@@ -1850,13 +1916,42 @@ io.on("connection", (socket) => {
 
 app.get("/api/directory", async (req, res) => {
   const dir = await dbGetDirectory();
+  // Merge in any verified users not yet in directory (from x_profiles, wallet_addresses)
+  const dirNames = new Set(dir.map(d => (d.name || "").toLowerCase()));
+  // Add currently online verified users
+  for (const [, data] of onlineUsers) {
+    if (data.disconnectedAt) continue;
+    if (!data.xUsername && !data.walletAddress) continue;
+    if (dirNames.has(data.name.toLowerCase())) continue;
+    dir.push({ name: data.name, xUsername: data.xUsername || null, walletAddress: data.walletAddress || null, avatar: data.avatar || null, lastSeen: Date.now() });
+    dirNames.add(data.name.toLowerCase());
+    // Backfill to directory DB
+    dbAddToDirectory(data.name, { displayName: data.name, xUsername: data.xUsername, walletAddress: data.walletAddress, avatar: data.avatar });
+  }
+  // Also pull from x_profiles for users who authenticated via X before directory existed
+  if (supabase) {
+    try {
+      const { data: xProfiles } = await supabase.from("x_profiles").select("username, display_name, avatar");
+      if (xProfiles) {
+        for (const xp of xProfiles) {
+          const name = xp.display_name || xp.username;
+          if (dirNames.has(name.toLowerCase())) continue;
+          const wallet = await dbGetWallet(name);
+          const entry = { name, xUsername: xp.username, walletAddress: wallet || null, avatar: xp.avatar || null, lastSeen: null };
+          dir.push(entry);
+          dirNames.add(name.toLowerCase());
+          // Backfill
+          dbAddToDirectory(name, { displayName: name, xUsername: xp.username, walletAddress: wallet, avatar: xp.avatar });
+        }
+      }
+    } catch {}
+  }
   res.json(dir);
 });
 
 app.get("/api/stats", async (req, res) => {
-  const visitors = await dbGetCounter("total_visitors");
   const dirSize = (await dbGetDirectory()).length;
-  res.json({ totalVisitors: visitors + totalVisitors, onlineUsers: onlineUsers.size, registeredUsers: dirSize });
+  res.json({ totalVisitors: totalVisitors, onlineUsers: onlineUsers.size, registeredUsers: dirSize });
 });
 
 app.use(express.static(path.join(__dirname, "public")));

@@ -262,6 +262,42 @@
       text-align: center; color: #555; padding: 20px; font-size: 12px;
     }
 
+    /* Quick post bar */
+    .quick-post {
+      display: none; /* shown for verified users */
+      gap: 8px; align-items: flex-end;
+      padding: 8px 0; margin-bottom: 4px;
+    }
+    .quick-post.active { display: flex; }
+    .quick-post-input {
+      flex: 1; background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); padding: 8px 12px; border-radius: 10px;
+      font-size: 13px; font-family: var(--font-body); outline: none;
+      resize: none; min-height: 20px; max-height: 80px; line-height: 1.4;
+    }
+    .quick-post-input:focus { border-color: rgba(232,69,60,0.4); }
+    .quick-post-btn {
+      padding: 8px 16px; background: var(--red); border: none;
+      color: #fff; font-size: 13px; border-radius: 10px; cursor: pointer;
+      font-family: var(--font-body); font-weight: 600; white-space: nowrap;
+    }
+    .quick-post-btn:hover { opacity: 0.9; }
+
+    /* Tabs */
+    .tab-bar {
+      display: flex; gap: 0; margin-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab {
+      flex: 1; padding: 8px 0; background: none; border: none;
+      color: var(--text-muted); font-size: 13px; font-family: var(--font-mono);
+      font-weight: 600; cursor: pointer; text-align: center;
+      border-bottom: 2px solid transparent; transition: all 0.15s;
+      text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--text); border-bottom-color: var(--red); }
+
     /* ── Profile Screen ──────────────────────────── */
     #profile-screen {
       flex-direction: column; overflow-y: auto;
@@ -1483,9 +1519,9 @@
     <div class="info-bar">
       <div class="info-top">
         <div class="my-info">
-          <div class="pfp-circle my-pfp" id="my-pfp" title="Change profile picture"></div>
+          <div class="pfp-circle my-pfp" id="my-pfp" title="View profile" onclick="showProfile(myName)" style="cursor:pointer;"></div>
           <div>
-            <div class="my-name"><span id="my-name-display"></span> · <a href="#" id="sign-out-link" class="sign-out-link">Sign out</a> <button class="link-btn" id="link-wallet-btn" style="display:none;" title="Link Wallet">+ wallet</button> <button class="link-btn" id="link-x-btn" style="display:none;" title="Link X account">+ X</button></div>
+            <div class="my-name"><span id="my-name-display" style="cursor:pointer;" onclick="showProfile(myName)"></span> · <a href="#" id="sign-out-link" class="sign-out-link">Sign out</a> <button class="link-btn" id="link-wallet-btn" style="display:none;" title="Link Wallet">+ wallet</button> <button class="link-btn" id="link-x-btn" style="display:none;" title="Link X account">+ X</button></div>
             <div class="my-custom-status" id="my-custom-status" title="Click to set status"></div>
           </div>
         </div>
@@ -1550,11 +1586,24 @@
       </div>
     </div>
 
-    <div class="search-wrap">
+    <!-- Quick post -->
+    <div class="quick-post" id="quick-post">
+      <textarea class="quick-post-input" id="quick-post-input" placeholder="What's on your mind?" maxlength="500" rows="1"></textarea>
+      <button class="quick-post-btn" id="quick-post-btn">Post</button>
+    </div>
+
+    <!-- Tab switcher -->
+    <div class="tab-bar" id="tab-bar">
+      <button class="tab active" id="tab-contacts" data-tab="contacts">Contacts</button>
+      <button class="tab" id="tab-feed" data-tab="feed">Feed</button>
+    </div>
+
+    <div class="search-wrap" id="search-wrap">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
       <input type="text" id="search-input" class="search-input" placeholder="Search or add @xhandle..." />
     </div>
     <div id="contacts-list" class="contacts-list"></div>
+    <div id="feed-list" class="contacts-list" style="display:none;"></div>
 
     <!-- Public Chat -->
     <button class="chat-toggle" id="chat-toggle">
@@ -2104,7 +2153,8 @@ function showToast(msg, type = "info", duration = 3000) {
 
 function showScreen(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
-  document.getElementById(id).classList.add("active");
+  const el = document.getElementById(id);
+  if (el) el.classList.add("active");
 }
 
 function getInitials(name) {
@@ -2205,21 +2255,34 @@ function createPeerConnection() {
 }
 
 async function createAndSendOffer() {
-  createPeerConnection();
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
-  if (socket) socket.emit("webrtc-offer", { callId: currentCallId, sdp: offer });
+  try {
+    createPeerConnection();
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    if (socket) socket.emit("webrtc-offer", { callId: currentCallId, sdp: offer });
+  } catch (e) {
+    console.error("Offer creation failed:", e);
+    showToast("Connection failed — try again", "error");
+  }
 }
 
 async function handleOffer(sdp) {
-  createPeerConnection();
-  await peerConnection.setRemoteDescription(sdp);
-  const answer = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answer);
-  socket.emit("webrtc-answer", { callId: currentCallId, sdp: answer });
+  try {
+    createPeerConnection();
+    await peerConnection.setRemoteDescription(sdp);
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    if (socket) socket.emit("webrtc-answer", { callId: currentCallId, sdp: answer });
+  } catch (e) {
+    console.error("Answer creation failed:", e);
+    showToast("Connection failed — try again", "error");
+  }
 }
 
-async function handleAnswer(sdp) { if (peerConnection) await peerConnection.setRemoteDescription(sdp); }
+async function handleAnswer(sdp) {
+  try { if (peerConnection) await peerConnection.setRemoteDescription(sdp); }
+  catch (e) { console.error("Answer handling failed:", e); }
+}
 
 async function handleIceCandidate(candidate) {
   if (peerConnection) { try { await peerConnection.addIceCandidate(candidate); } catch {} }
@@ -2843,7 +2906,7 @@ function renderContacts(filter = "") {
 
   if (!hasCalls && !hasLive && !hasSaved && !hasOthers) {
     list.innerHTML = `<div style="text-align:center;color:#666;padding:40px;font-size:14px;">
-      ${users.length <= 1 ? 'No other users online yet.<br>Share your link to call someone!' : 'No matches found.'}
+      ${users.length <= 1 ? 'No other users online yet.<br>Check the <span style="color:var(--text);cursor:pointer;text-decoration:underline;" onclick="document.getElementById(\'tab-feed\').click()">Feed</span> or share your link!' : 'No matches found.'}
     </div>`;
     return;
   }
@@ -3055,7 +3118,12 @@ function connectSocket() {
     resetIdleTimer();
     loadStats();
     if (socket) socket.emit("get-notifications");
+    // Show quick-post for verified users
+    const qp = document.getElementById("quick-post");
+    if (qp) qp.classList.toggle("active", !!(xUsername || walletAddress));
     showScreen("contacts-screen");
+    // Pre-load feed
+    if (socket) socket.emit("get-global-feed", { limit: 30 });
     if (reconnected) {
       showToast("Reconnected!", "success");
     }
@@ -3356,6 +3424,18 @@ function connectSocket() {
     if (profileTarget && profileIsOwn) {
       socket.emit("get-user-posts", { username: profileTarget, limit: 20, offset: 0 });
     }
+    // Refresh feed if active
+    if (activeTab === "feed") loadGlobalFeed();
+  });
+
+  socket.on("global-feed", ({ posts }) => {
+    const list = document.getElementById("feed-list");
+    if (!list) return;
+    if (posts.length === 0) {
+      list.innerHTML = '<div class="post-empty">No posts yet. Be the first!</div>';
+      return;
+    }
+    list.innerHTML = posts.map(p => renderPost(p)).join("");
   });
 
   socket.on("post-deleted", ({ postId }) => {
@@ -3618,8 +3698,17 @@ function showProfile(username) {
   $("#profile-banner").style.backgroundImage = "";
   const avatarEl = $("#profile-avatar");
   const c = getColor(username);
-  avatarEl.style.background = c;
-  avatarEl.innerHTML = `<span style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:#fff">${getInitials(username)}</span>`;
+  // Try to show cached avatar immediately while server loads
+  const cached = profileIsOwn ? null : getCachedMeta(username.toLowerCase());
+  const ownAvatar = profileIsOwn ? myAvatar : null;
+  const quickAvatar = ownAvatar || cached?.avatar || null;
+  if (quickAvatar) {
+    avatarEl.style.background = `url(${quickAvatar}) center/cover`;
+    avatarEl.innerHTML = "";
+  } else {
+    avatarEl.style.background = c;
+    avatarEl.innerHTML = `<span style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:#fff">${getInitials(username)}</span>`;
+  }
 
   if (socket) {
     socket.emit("get-profile", { username });
@@ -3909,6 +3998,49 @@ $("#directory-close").addEventListener("click", () => {
 
 $("#directory-search").addEventListener("input", (e) => {
   renderDirectory(e.target.value);
+});
+
+// Notifications
+// Tabs (Contacts / Feed)
+let activeTab = "contacts";
+
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    activeTab = tab.dataset.tab;
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === activeTab));
+    if (activeTab === "contacts") {
+      $("#contacts-list").style.display = "";
+      $("#feed-list").style.display = "none";
+      $("#search-wrap").style.display = "";
+    } else {
+      $("#contacts-list").style.display = "none";
+      $("#feed-list").style.display = "";
+      $("#search-wrap").style.display = "none";
+      loadGlobalFeed();
+    }
+  });
+});
+
+function loadGlobalFeed() {
+  if (socket) socket.emit("get-global-feed", { limit: 30 });
+}
+
+// Quick post
+$("#quick-post-btn").addEventListener("click", () => {
+  const input = $("#quick-post-input");
+  const text = input.value.trim();
+  if (!text || !socket) return;
+  socket.emit("create-post", { text });
+  input.value = "";
+  input.style.height = "auto";
+});
+$("#quick-post-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#quick-post-btn").click(); }
+});
+// Auto-resize textarea
+$("#quick-post-input").addEventListener("input", function() {
+  this.style.height = "auto";
+  this.style.height = Math.min(this.scrollHeight, 80) + "px";
 });
 
 // Notifications
