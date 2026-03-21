@@ -305,7 +305,7 @@ async function dbSetAvatar(name, dataUrl) {
 const statsCache = new Map();
 
 function defaultStats() {
-  return { received: 0, accepted: 0, declined: 0, missed: 0, streak: 0, best_streak: 0, totalMeets: 0, totalOnlineMs: 0 };
+  return { received: 0, accepted: 0, declined: 0, missed: 0, streak: 0, best_streak: 0, totalMeets: 0, totalOnlineMs: 0, creditSeconds: 0 };
 }
 
 async function dbGetStats(name) {
@@ -315,7 +315,7 @@ async function dbGetStats(name) {
     try {
       const { data } = await supabase.from("call_stats").select("*").eq("name", key).single();
       if (data) {
-        const stats = { received: data.received||0, accepted: data.accepted||0, declined: data.declined||0, missed: data.missed||0, streak: data.streak||0, best_streak: data.best_streak||0, totalMeets: data.total_meets||0, totalOnlineMs: data.total_online_ms||0 };
+        const stats = { received: data.received||0, accepted: data.accepted||0, declined: data.declined||0, missed: data.missed||0, streak: data.streak||0, best_streak: data.best_streak||0, totalMeets: data.total_meets||0, totalOnlineMs: data.total_online_ms||0, creditSeconds: data.credit_seconds||0 };
         statsCache.set(key, stats);
         return stats;
       }
@@ -335,7 +335,7 @@ async function dbSetStats(name, stats) {
   statsCache.set(key, stats);
   if (supabase) {
     try {
-      await supabase.from("call_stats").upsert({ name: key, received: stats.received, accepted: stats.accepted, declined: stats.declined, missed: stats.missed, streak: stats.streak, best_streak: stats.best_streak, total_meets: stats.totalMeets, total_online_ms: stats.totalOnlineMs, updated_at: new Date().toISOString() });
+      await supabase.from("call_stats").upsert({ name: key, received: stats.received, accepted: stats.accepted, declined: stats.declined, missed: stats.missed, streak: stats.streak, best_streak: stats.best_streak, total_meets: stats.totalMeets, total_online_ms: stats.totalOnlineMs, credit_seconds: stats.creditSeconds || 0, updated_at: new Date().toISOString() });
     } catch (e) { console.warn("Stats write error:", e.message); }
     return;
   }
@@ -928,6 +928,40 @@ async function claimWalletInbox(walletAddress, userName, socket) {
       console.log(`📬 ${userName} claimed ${claimed} DM threads sent to ${addr.slice(0,6)}...`);
     }
   }
+}
+
+// ─── Pair meeting history ────────────────────────────────────────────────────
+
+async function dbRecordPairMeeting(nameA, nameB) {
+  const pair = [nameA, nameB].map(n => n.toLowerCase().trim()).sort().join(":");
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("pair_meetings").select("meet_count").eq("pair", pair).single();
+      if (data) {
+        await supabase.from("pair_meetings").update({ meet_count: data.meet_count + 1, last_met: new Date().toISOString() }).eq("pair", pair);
+      } else {
+        await supabase.from("pair_meetings").insert({ pair, meet_count: 1, credit_seconds: 30, last_met: new Date().toISOString() });
+      }
+    } catch (e) { console.warn("Pair meeting record error:", e.message); }
+    return;
+  }
+  const stored = jsonGet("pair_meetings", pair);
+  let pm; try { pm = stored ? JSON.parse(stored) : { meetCount: 0, creditSeconds: 0 }; } catch { pm = { meetCount: 0, creditSeconds: 0 }; }
+  pm.meetCount++; pm.creditSeconds += 30; pm.lastMet = Date.now();
+  jsonSet("pair_meetings", pair, JSON.stringify(pm));
+}
+
+async function dbGetPairMeetings(nameA, nameB) {
+  const pair = [nameA, nameB].map(n => n.toLowerCase().trim()).sort().join(":");
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("pair_meetings").select("*").eq("pair", pair).single();
+      if (data) return { meetCount: data.meet_count || 0, creditSeconds: data.credit_seconds || 0, lastMet: data.last_met ? new Date(data.last_met).getTime() : null };
+    } catch {}
+    return { meetCount: 0, creditSeconds: 0, lastMet: null };
+  }
+  const stored = jsonGet("pair_meetings", pair);
+  try { return stored ? JSON.parse(stored) : { meetCount: 0, creditSeconds: 0, lastMet: null }; } catch { return { meetCount: 0, creditSeconds: 0, lastMet: null }; }
 }
 
 // ─── Last-call timestamps (per pair) ─────────────────────────────────────────
@@ -2100,9 +2134,16 @@ io.on("connection", (socket) => {
     // Also count for the caller
     if (caller) { const cs = await dbGetStats(caller.name); cs.totalMeets++; await dbSetStats(caller.name, cs); await refreshUserStats(call.callerId); }
     if (caller && callee) await dbSetLastCall(caller.name, callee.name);
-    call.timerId = setTimeout(() => {
+    call.timerId = setTimeout(async () => {
+      // Award 30 seconds credit to both users for completing the meeting
+      const callerData = onlineUsers.get(call.callerId);
+      const calleeData = onlineUsers.get(call.calleeId);
+      if (callerData) { const cs = await dbGetStats(callerData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(callerData.name, cs); }
+      if (calleeData) { const cs = await dbGetStats(calleeData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(calleeData.name, cs); }
+      // Record pair meeting
+      if (callerData && calleeData) dbRecordPairMeeting(callerData.name, calleeData.name);
       const s1 = getSocketByUserId(call.callerId); const s2 = getSocketByUserId(call.calleeId);
-      if (s1) s1.emit("call-timeout", { callId }); if (s2) s2.emit("call-timeout", { callId });
+      if (s1) s1.emit("call-timeout", { callId, creditEarned: 30 }); if (s2) s2.emit("call-timeout", { callId, creditEarned: 30 });
       cleanupCall(callId);
     }, CALL_DURATION_MS);
     const s1 = getSocketByUserId(call.callerId); if (s1) s1.emit("call-accepted", { callId });
@@ -2115,6 +2156,39 @@ io.on("connection", (socket) => {
     if (callee) { await recordCallOutcome(callee.name, "declined"); await refreshUserStats(call.calleeId); }
     const s = getSocketByUserId(call.callerId); if (s) s.emit("call-declined", { callId });
     cleanupCall(callId);
+  });
+
+  socket.on("extend-call", async ({ callId, seconds }) => {
+    const userId = socket.userId; if (!userId) return;
+    const call = activeCalls.get(callId); if (!call || !call.startedAt) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const secs = Math.min(Math.max(parseInt(seconds) || 30, 10), 300); // 10-300 seconds
+    // Check user has enough credit
+    const stats = await dbGetStats(userData.name);
+    if ((stats.creditSeconds || 0) < secs) {
+      socket.emit("extend-error", { message: `Not enough credit (${stats.creditSeconds || 0}s available)` });
+      return;
+    }
+    // Deduct credit
+    stats.creditSeconds = (stats.creditSeconds || 0) - secs;
+    await dbSetStats(userData.name, stats);
+    // Extend the timer
+    if (call.timerId) clearTimeout(call.timerId);
+    const remaining = CALL_DURATION_MS - (Date.now() - call.startedAt) + (secs * 1000);
+    call.timerId = setTimeout(async () => {
+      const callerData = onlineUsers.get(call.callerId);
+      const calleeData = onlineUsers.get(call.calleeId);
+      if (callerData) { const cs = await dbGetStats(callerData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(callerData.name, cs); }
+      if (calleeData) { const cs = await dbGetStats(calleeData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(calleeData.name, cs); }
+      if (callerData && calleeData) dbRecordPairMeeting(callerData.name, calleeData.name);
+      const s1 = getSocketByUserId(call.callerId); const s2 = getSocketByUserId(call.calleeId);
+      if (s1) s1.emit("call-timeout", { callId, creditEarned: 30 }); if (s2) s2.emit("call-timeout", { callId, creditEarned: 30 });
+      cleanupCall(callId);
+    }, Math.max(remaining, 0));
+    // Notify both users
+    const s1 = getSocketByUserId(call.callerId); const s2 = getSocketByUserId(call.calleeId);
+    if (s1) s1.emit("call-extended", { callId, addedSeconds: secs, byUser: userData.name, newCreditBalance: userId === call.callerId ? stats.creditSeconds : null });
+    if (s2) s2.emit("call-extended", { callId, addedSeconds: secs, byUser: userData.name, newCreditBalance: userId === call.calleeId ? stats.creditSeconds : null });
   });
 
   socket.on("end-call", ({ callId }) => {
@@ -2283,6 +2357,60 @@ app.get("/api/dm-conversations", async (req, res) => {
     return res.json(convos.sort((a, b) => b.lastTime - a.lastTime));
   }
   res.json([]);
+});
+
+// ─── Dynamic OG meta tags for link previews ─────────────────────────────────
+
+const OG_IMAGE = "https://minimeet.cc/og-image.png";
+const SITE_NAME = "minimeet.cc";
+const SITE_DESC = "minute meetings and socials";
+
+app.get("/", async (req, res, next) => {
+  const ua = (req.headers["user-agent"] || "").toLowerCase();
+  const isCrawler = /bot|crawl|spider|preview|slack|discord|telegram|whatsapp|twitter|facebook|linkedin|og-image/i.test(ua);
+  if (!isCrawler) return next();
+
+  const { profile, call, stream } = req.query;
+  let title = SITE_NAME;
+  let description = SITE_DESC;
+  let url = `https://${SITE_NAME}/`;
+
+  if (profile) {
+    const name = decodeURIComponent(profile);
+    title = `${name} on ${SITE_NAME}`;
+    description = `View ${name}'s profile on ${SITE_NAME} — ${SITE_DESC}`;
+    url += `?profile=${encodeURIComponent(name)}`;
+  } else if (call) {
+    const name = decodeURIComponent(call);
+    title = `Call ${name} on ${SITE_NAME}`;
+    description = `Join a 1-minute video call with ${name} on ${SITE_NAME}`;
+    url += `?call=${encodeURIComponent(name)}`;
+  } else if (stream) {
+    title = `Live stream on ${SITE_NAME}`;
+    description = `Watch a live stream on ${SITE_NAME} — ${SITE_DESC}`;
+    url += `?stream=${encodeURIComponent(stream)}`;
+  }
+
+  // Read the HTML and inject meta tags
+  const htmlPath = path.join(__dirname, "public", "index.html");
+  let html = fs.readFileSync(htmlPath, "utf-8");
+  const metaTags = `
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="${SITE_NAME}" />
+    <meta property="og:title" content="${title}" />
+    <meta property="og:description" content="${description}" />
+    <meta property="og:url" content="${url}" />
+    <meta property="og:image" content="${OG_IMAGE}" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="${title}" />
+    <meta name="twitter:description" content="${description}" />
+    <meta name="twitter:image" content="${OG_IMAGE}" />
+    <meta name="description" content="${description}" />
+  `;
+  html = html.replace("</head>", metaTags + "</head>");
+  // Also update the <title>
+  html = html.replace("<title>minimeet.cc</title>", `<title>${title}</title>`);
+  res.send(html);
 });
 
 app.use(express.static(path.join(__dirname, "public")));

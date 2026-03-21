@@ -4,6 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>minimeet.cc</title>
+  <meta name="description" content="minute meetings and socials" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="minimeet.cc" />
+  <meta property="og:title" content="minimeet.cc" />
+  <meta property="og:description" content="minute meetings and socials" />
   <link rel="icon" href="data:image/svg+xml,<svg width='120' height='140' viewBox='0 0 120 140' xmlns='http://www.w3.org/2000/svg'><rect x='0' y='0' width='120' height='140' rx='12' fill='%230A0A0F'/><text x='60' y='56' text-anchor='middle' font-family='Helvetica Neue,Arial,sans-serif' font-size='40' font-weight='800' fill='%23FFFFFF' letter-spacing='1'>MM</text><line x1='25' y1='78' x2='95' y2='68' stroke='%23E8453C' stroke-width='3' stroke-linecap='round'/><text x='60' y='116' text-anchor='middle' font-family='Helvetica Neue,Arial,sans-serif' font-size='40' font-weight='800' fill='%23FFFFFF' letter-spacing='1'>CC</text></svg>">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.socket.io/4.7.4/socket.io.min.js" integrity="sha384-Gr6Lu2Ajx28mzwyVR8CFkULdCU7kMlZ9UthllibdOSo6qAiN+yXNHqtgdTvFXMT4" crossorigin="anonymous"></script>
@@ -506,6 +511,41 @@
     .notif-item-text { color: #bbb; line-height: 1.4; }
     .notif-item-text strong { color: var(--text); }
     .notif-item-time { font-size: 10px; color: #555; margin-top: 3px; font-family: var(--font-mono); }
+
+    /* Upload preview overlay */
+    .upload-preview-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7); backdrop-filter: blur(4px);
+      z-index: 3000; align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px;
+    }
+    .upload-preview-overlay.active { display: flex; }
+    .upload-preview-label {
+      font-size: 14px; color: #aaa; font-family: var(--font-mono);
+    }
+    .upload-preview-img {
+      max-width: 80vw; max-height: 50vh; border-radius: 12px;
+      border: 1px solid var(--border); object-fit: contain;
+    }
+    .upload-preview-img.circle {
+      width: 128px; height: 128px; border-radius: 50%; object-fit: cover;
+    }
+    .upload-preview-actions {
+      display: flex; gap: 12px;
+    }
+    .upload-preview-actions button {
+      padding: 8px 24px; border-radius: 8px; font-size: 14px;
+      cursor: pointer; font-family: var(--font-body); font-weight: 600;
+      transition: all 0.15s;
+    }
+    .upload-preview-save {
+      background: var(--red); border: none; color: #fff;
+    }
+    .upload-preview-save:hover { opacity: 0.9; }
+    .upload-preview-cancel {
+      background: none; border: 1px solid var(--border); color: var(--text);
+    }
+    .upload-preview-cancel:hover { background: var(--surface-hover); }
     .my-custom-status {
       font-size: 11px; color: var(--text-muted); cursor: pointer;
       font-family: var(--font-mono); padding: 2px 0;
@@ -1743,7 +1783,7 @@
   <!-- ══════════════ PROFILE SCREEN ══════════════ -->
   <div id="profile-screen" class="screen">
     <div class="profile-banner" id="profile-banner">
-      <button class="profile-back" id="profile-back" onclick="window.history.pushState({},'','/');showScreen('contacts-screen')">
+      <button class="profile-back" id="profile-back" onclick="window.history.pushState({},'','/');document.title='minimeet.cc';showScreen('contacts-screen')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
       </button>
       <button class="profile-banner-edit" id="profile-banner-edit" onclick="document.getElementById('banner-file-input').click()" title="Change banner">
@@ -1814,6 +1854,9 @@
       <button class="ctrl-btn call-chat-btn" id="call-chat-btn" title="Chat">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
         <span class="call-chat-badge" id="call-chat-badge">0</span>
+      </button>
+      <button class="ctrl-btn extend-btn" id="extend-call-btn" title="Extend call (+30s)" style="display:none;" onclick="extendCall()">
+        <span style="font-size:11px;font-family:var(--font-mono);font-weight:700;">+30s</span>
       </button>
       <button class="end-btn" id="end-call-btn" title="End Call">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M10.68 13.31a16 16 0 003.41 2.6l1.27-1.27a2 2 0 012.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0122 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.362 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 002.59 3.4z"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
@@ -1889,6 +1932,16 @@
       <button class="end-btn" id="stream-end-btn" title="End Stream / Leave">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
+    </div>
+  </div>
+
+  <!-- Upload preview overlay -->
+  <div class="upload-preview-overlay" id="upload-preview-overlay" onclick="if(event.target===this)cancelUploadPreview()">
+    <div class="upload-preview-label" id="upload-preview-label"></div>
+    <img class="upload-preview-img" id="upload-preview-img" />
+    <div class="upload-preview-actions">
+      <button class="upload-preview-cancel" onclick="cancelUploadPreview()">Cancel</button>
+      <button class="upload-preview-save" onclick="confirmUploadPreview()">Save</button>
     </div>
   </div>
 
@@ -2422,6 +2475,7 @@ function updateMyStats() {
   if (myStats.received > 0) { const rate = pickupRate(myStats); parts.push(`<div class="my-stats-item"><span>${rate}%</span> pickup</div>`); }
   if (myStats.streak >= 3) parts.push(`<div class="my-stats-item">🔥<span>${myStats.streak}</span></div>`);
   if (myStats.totalOnlineMs > 60_000) parts.push(`<div class="my-stats-item"><span>${formatOnlineTime(myStats.totalOnlineMs)}</span> online</div>`);
+  if (myStats.creditSeconds > 0) parts.push(`<div class="my-stats-item"><span>${myStats.creditSeconds}s</span> credit</div>`);
   el.innerHTML = parts.join('<span style="opacity:0.3">·</span>');
 }
 
@@ -2607,6 +2661,7 @@ async function startStream() {
 function joinStream(streamId) {
   isStreamer = false;
   currentStreamId = streamId;
+  window.history.pushState({ stream: streamId }, "", `/?stream=${streamId}`);
   streamPeerConnections.clear();
   // Viewer: show remote video, hide local
   $("#stream-local-video").style.display = "none";
@@ -2624,6 +2679,7 @@ function leaveStream() {
   } else if (currentStreamId) {
     socket.emit("leave-stream", { streamId: currentStreamId });
   }
+  window.history.pushState({}, "", "/");
   cleanupStream();
   showScreen("contacts-screen");
 }
@@ -3030,25 +3086,63 @@ $("#my-pfp").addEventListener("click", () => {
   $("#pfp-change-input").click();
 });
 
+let pendingUpload = null; // { type: "avatar" | "banner", dataUrl }
+
+function showUploadPreview(type, dataUrl) {
+  pendingUpload = { type, dataUrl };
+  const overlay = document.getElementById("upload-preview-overlay");
+  const img = document.getElementById("upload-preview-img");
+  const label = document.getElementById("upload-preview-label");
+  img.src = dataUrl;
+  img.className = type === "avatar" ? "upload-preview-img circle" : "upload-preview-img";
+  label.textContent = type === "avatar" ? "Profile picture preview" : "Banner preview";
+  overlay.classList.add("active");
+}
+
+window.cancelUploadPreview = function() {
+  pendingUpload = null;
+  document.getElementById("upload-preview-overlay").classList.remove("active");
+};
+
+window.confirmUploadPreview = function() {
+  if (!pendingUpload) return;
+  const { type, dataUrl } = pendingUpload;
+  if (type === "avatar") {
+    myAvatar = dataUrl;
+    storeAvatar(dataUrl);
+    updateMyPfp();
+    if (socket) socket.emit("update-avatar", { avatar: dataUrl });
+    // Update profile page avatar if visible
+    const profileAvatar = document.getElementById("profile-avatar");
+    if (profileAvatar && profileIsOwn) {
+      profileAvatar.style.background = `url(${dataUrl}) center/cover`;
+      profileAvatar.innerHTML = "";
+    }
+    showToast("Profile picture updated!", "success");
+  } else if (type === "banner") {
+    if (socket) socket.emit("update-profile", { banner: dataUrl });
+    $("#profile-banner").style.backgroundImage = `url(${dataUrl})`;
+    showToast("Banner updated!", "success");
+  }
+  pendingUpload = null;
+  document.getElementById("upload-preview-overlay").classList.remove("active");
+};
+
 $("#pfp-change-input").addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  const dataUrl = await resizeImage(file);
-  myAvatar = dataUrl;
-  storeAvatar(dataUrl);
-  updateMyPfp();
-  // Update server
-  if (socket) socket.emit("update-avatar", { avatar: dataUrl });
-  showToast("Profile picture updated!", "success");
+  try {
+    const dataUrl = await resizeImage(file);
+    showUploadPreview("avatar", dataUrl);
+  } catch (err) { showToast("Image failed to load", "error"); }
+  e.target.value = "";
 });
 
 $("#banner-file-input").addEventListener("change", async (e) => {
   const file = e.target.files[0]; if (!file) return;
   try {
     const dataUrl = await resizeBanner(file);
-    if (socket) socket.emit("update-profile", { banner: dataUrl });
-    $("#profile-banner").style.backgroundImage = `url(${dataUrl})`;
-    showToast("Banner updated!", "success");
+    showUploadPreview("banner", dataUrl);
   } catch (err) { showToast("Image failed to load", "error"); }
   e.target.value = "";
 });
@@ -3358,6 +3452,9 @@ function setupCallUI(name, avatar, status) {
   isMuted = false; isVideoOff = false;
   $("#mute-btn").classList.remove("active");
   $("#video-btn").classList.remove("active");
+  // Show extend button if user has credit
+  const extBtn = document.getElementById("extend-call-btn");
+  if (extBtn) extBtn.style.display = (myStats?.creditSeconds > 0) ? "" : "none";
 }
 
 function setupEndedUI(name, avatar, reason, duration) {
@@ -3395,6 +3492,11 @@ async function callUser(userId, name, avatar) {
   await startCamera();
   socket.emit("call-user", { calleeId: userId });
 }
+
+window.extendCall = function() {
+  if (!currentCallId || !socket) return;
+  socket.emit("extend-call", { callId: currentCallId, seconds: 30 });
+};
 
 function endCurrentCall() {
   if (currentCallId) socket.emit("end-call", { callId: currentCallId });
@@ -3514,6 +3616,12 @@ function connectSocket() {
     if (profileLink) {
       localStorage.removeItem("om_profileLink");
       setTimeout(() => showProfile(profileLink), 300);
+    }
+    // Auto-join stream if arriving via ?stream=
+    const streamLink = localStorage.getItem("om_streamLink");
+    if (streamLink) {
+      localStorage.removeItem("om_streamLink");
+      setTimeout(() => joinStream(streamLink), 500);
     }
   });
 
@@ -3663,10 +3771,24 @@ function connectSocket() {
   });
 
   // Call end
-  socket.on("call-timeout", () => {
+  socket.on("call-timeout", ({ creditEarned }) => {
     cleanup();
-    if (currentRemote) setupEndedUI(currentRemote.name, currentRemote.avatar, "Your 60 seconds are up!", CALL_DURATION);
+    const msg = creditEarned ? `Time's up! +${creditEarned}s credit earned` : "Your 60 seconds are up!";
+    if (currentRemote) setupEndedUI(currentRemote.name, currentRemote.avatar, msg, CALL_DURATION);
     showScreen("ended-screen");
+    // Refresh stats to show new credit
+    if (socket) socket.emit("get-contacts");
+  });
+
+  socket.on("call-extended", ({ callId, addedSeconds, byUser }) => {
+    if (callId !== currentCallId) return;
+    timeLeft += addedSeconds;
+    updateTimerUI();
+    showToast(`${byUser} added ${addedSeconds}s to the call`, "success", 2000);
+  });
+
+  socket.on("extend-error", ({ message }) => {
+    showToast(message, "error");
   });
 
   socket.on("call-ended", ({ callId, duration }) => {
@@ -3939,6 +4061,7 @@ function connectSocket() {
   // ── Streaming events ──────────────────────────────────────────────────
   socket.on("stream-started", ({ streamId }) => {
     currentStreamId = streamId;
+    window.history.pushState({ stream: streamId }, "", `/?stream=${streamId}`);
     $("#stream-title-overlay").textContent = `${myName}'s stream`;
     updateStreamViewerCount(0);
     renderStreamViewers([]);
@@ -4140,6 +4263,7 @@ function showProfile(username) {
   profileIsOwn = (myName && username.toLowerCase() === myName.toLowerCase());
   // Update URL to shareable profile link
   window.history.pushState({ profile: username }, "", `/?profile=${encodeURIComponent(username)}`);
+  document.title = `${username} — minimeet.cc`;
   showScreen("profile-screen");
   // Clear while loading
   $("#profile-name").textContent = username;
@@ -4232,6 +4356,7 @@ function handleProfileData(data) {
   if (data.stats?.totalMeets > 0) statsHtml += `<div><span>${data.stats.totalMeets}</span> meets</div>`;
   if (data.stats?.received > 0) statsHtml += `<div><span>${pickupRate(data.stats)}%</span> pickup</div>`;
   if (data.stats?.totalOnlineMs > 60_000) statsHtml += `<div><span>${formatOnlineTime(data.stats.totalOnlineMs)}</span> online</div>`;
+  if (data.stats?.creditSeconds > 0) statsHtml += `<div><span>${data.stats.creditSeconds}s</span> credit</div>`;
   $("#profile-stats-row").innerHTML = statsHtml;
 
   // Actions
@@ -4472,7 +4597,11 @@ async function loadDirectory() {
           updated = true;
         }
       }
-      if (updated) localStorage.setItem("om_contact_cache", JSON.stringify(cache));
+      if (updated) {
+        localStorage.setItem("om_contact_cache", JSON.stringify(cache));
+        // Re-render contacts so offline contacts show updated pfps
+        renderContacts($("#search-input")?.value || "");
+      }
     }
   } catch {}
 }
@@ -5041,7 +5170,10 @@ $("#back-btn").addEventListener("click", () => { currentRemote = null; showScree
 window.addEventListener("popstate", (e) => {
   if (e.state?.profile) {
     showProfile(e.state.profile);
+  } else if (e.state?.stream) {
+    joinStream(e.state.stream);
   } else if (myUserId) {
+    document.title = "minimeet.cc";
     showScreen("contacts-screen");
   }
 });
@@ -5058,6 +5190,12 @@ window.addEventListener("load", async () => {
   if (params.get("profile")) {
     const profileLink = decodeURIComponent(params.get("profile"));
     localStorage.setItem("om_profileLink", profileLink);
+    window.history.replaceState({}, "", "/");
+  }
+
+  if (params.get("stream")) {
+    const streamLink = decodeURIComponent(params.get("stream"));
+    localStorage.setItem("om_streamLink", streamLink);
     window.history.replaceState({}, "", "/");
   }
 
