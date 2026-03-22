@@ -4224,12 +4224,17 @@ function connectSocket() {
 
   socket.on("post-created", (post) => {
     showToast("Posted!", "success");
-    // Refresh profile if viewing own
-    if (profileTarget && profileIsOwn) {
-      socket.emit("get-user-posts", { username: profileTarget, limit: 20, offset: 0 });
+    if (post.parentId && threadPostId) {
+      // Replied in a thread — refresh the thread in whichever context it's open
+      socket.emit("get-thread", { postId: threadPostId });
+    } else {
+      // Refresh profile if viewing own
+      if (profileTarget && profileIsOwn) {
+        socket.emit("get-user-posts", { username: profileTarget, limit: 20, offset: 0 });
+      }
+      // Refresh feed if active
+      if (activeTab === "feed") loadGlobalFeed();
     }
-    // Refresh feed if active
-    if (activeTab === "feed") loadGlobalFeed();
   });
 
   socket.on("feed-new-post", (post) => {
@@ -4270,16 +4275,32 @@ function connectSocket() {
     });
   });
 
+  socket.on("post-reply-count", ({ postId, replyCount }) => {
+    // Update reply count on ALL instances of this post (feed + profile)
+    document.querySelectorAll(`.post[data-post-id="${postId}"]`).forEach(postEl => {
+      const btns = postEl.querySelectorAll(".post-action");
+      // Reply button is the second .post-action
+      if (btns[1]) {
+        btns[1].innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> ${replyCount}`;
+      }
+    });
+  });
+
   socket.on("post-error", ({ message }) => { showToast(message, "error"); });
 
   socket.on("thread", ({ postId, posts }) => {
-    const list = document.getElementById("profile-posts-list");
+    const isFeed = threadContext === "feed";
+    const list = document.getElementById(isFeed ? "feed-list" : "profile-posts-list");
     if (!list) return;
     const rootPost = posts.find(p => p.id === postId) || posts[0];
     const replies = posts.filter(p => p.id !== postId);
     let html = "";
     // Back button
-    html += `<button style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px 0;font-size:12px;font-family:var(--font-mono);margin-bottom:8px;display:flex;align-items:center;gap:4px;" onclick="showProfile(profileTarget)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg> back to posts</button>`;
+    if (isFeed) {
+      html += `<button style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px 0;font-size:12px;font-family:var(--font-mono);margin-bottom:8px;display:flex;align-items:center;gap:4px;" onclick="exitFeedThread()"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg> back to feed</button>`;
+    } else {
+      html += `<button style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px 0;font-size:12px;font-family:var(--font-mono);margin-bottom:8px;display:flex;align-items:center;gap:4px;" onclick="showProfile(profileTarget)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg> back to posts</button>`;
+    }
     // Root post
     if (rootPost) html += renderPost(rootPost, true);
     // Thread line + replies
@@ -4289,10 +4310,11 @@ function connectSocket() {
       html += '</div>';
     }
     // Reply compose with cancel
+    const cancelAction = isFeed ? "exitFeedThread()" : "showProfile(profileTarget)";
     html += `<div class="post-compose" id="thread-reply-box" style="flex-direction:column;gap:8px;margin-top:8px;margin-left:28px;">
       <textarea class="post-compose-input" id="reply-input-${postId}" placeholder="Reply to this thread..." maxlength="500"></textarea>
       <div style="display:flex;justify-content:space-between;align-items:center;">
-        <button style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;font-family:var(--font-mono);" onclick="showProfile(profileTarget)">cancel</button>
+        <button style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;font-family:var(--font-mono);" onclick="${cancelAction}">cancel</button>
         <button class="post-compose-btn" onclick="submitPost('${postId}')">Reply</button>
       </div>
     </div>`;
@@ -4977,8 +4999,24 @@ window.deletePost = function(postId) {
   if (socket) socket.emit("delete-post", { postId });
 };
 
-window.showThread = function(postId) {
+let threadContext = null; // "feed" or "profile"
+let threadPostId = null;
+
+window.showThread = function(postId, context) {
+  threadPostId = postId;
+  // Auto-detect context if not provided
+  if (!context) {
+    const activeScreen = document.querySelector(".screen.active");
+    context = (activeScreen && activeScreen.id === "contacts-screen") ? "feed" : "profile";
+  }
+  threadContext = context;
   if (socket) socket.emit("get-thread", { postId });
+};
+
+window.exitFeedThread = function() {
+  threadContext = null;
+  threadPostId = null;
+  loadGlobalFeed();
 };
 
 // ── Notifications ───────────────────────────────────────────────────────

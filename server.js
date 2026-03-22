@@ -1987,12 +1987,15 @@ io.on("connection", (socket) => {
     if (!parentId) {
       socket.broadcast.emit("feed-new-post", post);
     }
-    // Notify parent post author on reply
+    // Broadcast reply count update and notify parent author on reply
     if (parentId) {
       const parent = await dbGetPost(parentId);
-      if (parent && parent.author !== userData.name.toLowerCase()) {
-        const notif = await dbCreateNotification(parent.author, "reply", userData.name, parentId, trimmed);
-        emitNotification(parent.author, notif);
+      if (parent) {
+        io.emit("post-reply-count", { postId: parentId, replyCount: parent.replyCount || 0 });
+        if (parent.author !== userData.name.toLowerCase()) {
+          const notif = await dbCreateNotification(parent.author, "reply", userData.name, parentId, trimmed);
+          emitNotification(parent.author, notif);
+        }
       }
     }
     // Notify users who have saved this author as a contact (top-level posts only)
