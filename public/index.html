@@ -2681,6 +2681,8 @@ function showToast(msg, type = "info", duration = 3000) {
 
 function showScreen(id) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  // Close any open overlays on screen change
+  document.querySelectorAll(".status-input-overlay.active, .upload-preview-overlay.active").forEach(o => o.classList.remove("active"));
   const el = document.getElementById(id);
   if (el) el.classList.add("active");
 }
@@ -3824,35 +3826,31 @@ function connectSocket() {
     // Show quick-post for verified users
     const qp = document.getElementById("quick-post");
     if (qp) qp.classList.toggle("active", !!(xUsername || walletAddress));
-    showScreen("contacts-screen");
-    // Pre-load feed
-    if (socket) socket.emit("get-global-feed", { limit: 30 });
-    // Auto-switch to Feed tab for users with no saved contacts
-    if (!myContacts || myContacts.length === 0) {
-      setTimeout(() => {
-        const feedTab = document.getElementById("tab-feed");
-        if (feedTab && !feedTab.classList.contains("active")) feedTab.click();
-      }, 500);
-    }
-    if (reconnected) {
-      showToast("Reconnected!", "success");
-    }
-    // Show call-link banner if arriving via ?call=
-    if (callTarget && !callTargetAutoDialed) {
-      showCallLinkBanner(callTarget);
-    }
-    // Open profile if arriving via ?profile=
+    // Check for pending deep links BEFORE showing any screen
     const profileLink = localStorage.getItem("om_profileLink");
+    const streamLink = localStorage.getItem("om_streamLink");
+
     if (profileLink) {
       localStorage.removeItem("om_profileLink");
-      setTimeout(() => showProfile(profileLink), 300);
-    }
-    // Auto-join stream if arriving via ?stream=
-    const streamLink = localStorage.getItem("om_streamLink");
-    if (streamLink) {
+      showProfile(profileLink);
+    } else if (streamLink) {
       localStorage.removeItem("om_streamLink");
       setTimeout(() => joinStream(streamLink), 500);
+    } else {
+      // Normal login — show contacts screen
+      showScreen("contacts-screen");
+      if (!myContacts || myContacts.length === 0) {
+        setTimeout(() => {
+          const feedTab = document.getElementById("tab-feed");
+          if (feedTab && !feedTab.classList.contains("active")) feedTab.click();
+        }, 500);
+      }
     }
+    // Pre-load feed
+    if (socket) socket.emit("get-global-feed", { limit: 30 });
+    if (reconnected) showToast("Reconnected!", "success");
+    // Show call-link banner if arriving via ?call=
+    if (callTarget && !callTargetAutoDialed) showCallLinkBanner(callTarget);
   });
 
   socket.on("wallet-link-error", ({ message }) => {
@@ -4255,11 +4253,26 @@ function connectSocket() {
   socket.on("thread", ({ postId, posts }) => {
     const list = document.getElementById("profile-posts-list");
     if (!list) return;
-    let html = posts.map(p => renderPost(p, true)).join("");
-    // Add reply compose
-    html += `<div class="post-compose" style="margin-top:8px;">
-      <textarea class="post-compose-input" id="reply-input-${postId}" placeholder="Reply..." maxlength="500"></textarea>
-      <button class="post-compose-btn" onclick="submitPost('${postId}')">Reply</button>
+    const rootPost = posts.find(p => p.id === postId) || posts[0];
+    const replies = posts.filter(p => p.id !== postId);
+    let html = "";
+    // Back button
+    html += `<button style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px 0;font-size:12px;font-family:var(--font-mono);margin-bottom:8px;display:flex;align-items:center;gap:4px;" onclick="showProfile(profileTarget)"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg> back to posts</button>`;
+    // Root post
+    if (rootPost) html += renderPost(rootPost, true);
+    // Thread line + replies
+    if (replies.length > 0) {
+      html += '<div style="border-left:2px solid var(--border);margin-left:14px;padding-left:12px;">';
+      html += replies.map(p => renderPost(p, true)).join("");
+      html += '</div>';
+    }
+    // Reply compose with cancel
+    html += `<div class="post-compose" id="thread-reply-box" style="flex-direction:column;gap:8px;margin-top:8px;margin-left:28px;">
+      <textarea class="post-compose-input" id="reply-input-${postId}" placeholder="Reply to this thread..." maxlength="500"></textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <button style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;font-family:var(--font-mono);" onclick="showProfile(profileTarget)">cancel</button>
+        <button class="post-compose-btn" onclick="submitPost('${postId}')">Reply</button>
+      </div>
     </div>`;
     list.innerHTML = html;
   });
@@ -4330,6 +4343,7 @@ function connectSocket() {
     else if (notif.type === "poke") showToast(`${notif.fromUser} poked you 👋`, "info", 2000);
     else if (notif.type === "dm") showToast(`${notif.fromUser}: ${(notif.preview || "").slice(0, 40)}`, "info", 2000);
     else if (notif.type === "call_request") showToast(`📞 ${notif.fromUser} wants to call you — check notifications`, "info", 5000);
+    else if (notif.type === "post") showToast(`${notif.fromUser} posted: ${(notif.preview || "").slice(0, 40)}`, "info", 3000);
     else if (notif.type === "tip") showToast(`💰 ${notif.fromUser} tipped you ${notif.preview}!`, "success", 5000);
   });
 
@@ -4396,9 +4410,10 @@ function connectSocket() {
   socket.on("stream-tip-event", ({ streamId, sender, amount, message }) => {
     if (streamId !== currentStreamId) return;
     const container = document.getElementById("stream-chat-messages");
+    if (!container) return;
     const el = document.createElement("div");
     el.className = "stream-tip-msg";
-    el.innerHTML = `<span class="tip-sender">${escapeHtml(sender)}</span> tipped <span class="tip-amount">${escapeHtml(amount)} ETH</span>${message ? `<div class="tip-message">${escapeHtml(message)}</div>` : ""}`;
+    el.innerHTML = `<span class="tip-sender">${escapeHtml(sender)}</span> tipped <span class="tip-amount">${escapeHtml(String(amount))} ETH</span>${message ? `<div class="tip-message">${escapeHtml(message)}</div>` : ""}`;
     container.appendChild(el);
     container.scrollTop = container.scrollHeight;
     playNotifSound();
@@ -4431,7 +4446,7 @@ function connectSocket() {
   socket.on("stream-answer", async ({ streamId, viewerId, sdp }) => {
     if (!isStreamer) return;
     const pc = streamPeerConnections.get(viewerId);
-    if (pc) await pc.setRemoteDescription(sdp);
+    if (pc) { try { await pc.setRemoteDescription(sdp); } catch (e) { console.error("Stream answer error:", e); } }
   });
 
   socket.on("stream-ice-candidate", async ({ streamId, viewerId, candidate }) => {
@@ -4561,6 +4576,7 @@ let profileIsOwn = false;
 
 function showProfile(username) {
   profileTarget = username;
+  pendingProfilePostImage = null; // reset on profile switch
   const isWalletAddress = /^0x[0-9a-fA-F]{40}$/.test(username);
   const isXHandle = username.startsWith("@") && username.length > 1;
 
@@ -4610,32 +4626,31 @@ function showProfile(username) {
     socket.emit("get-user-posts", { username: resolvedName, limit: 20, offset: 0 });
   }
 
-  // For unregistered 0x addresses or @handles, show minimal profile if server returns nothing
+  // For unregistered 0x addresses or @handles, render minimal profile immediately
   if (isWalletAddress || isXHandle) {
-    setTimeout(() => {
-      // If profile data hasn't loaded (no name update), show minimal actions
-      if ($("#profile-actions").innerHTML === "") {
-        let actionsHtml = "";
-        if (isWalletAddress) {
-          actionsHtml += `<button class="profile-action-btn" onclick="tipUser('${escapeHtml(username.toLowerCase())}','${escapeHtml(displayName).replace(/'/g,"\\'")}')">Tip ETH</button>`;
-          actionsHtml += `<button class="profile-action-btn" onclick="openDM(null,'${escapeHtml(username.toLowerCase()).replace(/'/g,"\\'")}',null)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> Message</button>`;
-          $("#profile-handle").innerHTML = `<a href="https://etherscan.io/address/${escapeHtml(username)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(username.slice(0,10))}...${escapeHtml(username.slice(-8))}</a>`;
-          $("#profile-posts-list").innerHTML = '<div class="post-empty">This address hasn\'t signed up yet</div>';
-        } else if (isXHandle) {
-          // Try to get X wallet address
-          fetch(`/api/x-wallet/${encodeURIComponent(username.slice(1))}`).then(r => r.ok ? r.json() : null).then(data => {
-            if (data?.address) {
-              actionsHtml = `<button class="profile-action-btn" onclick="tipUser('${escapeHtml(data.address)}','${escapeHtml(username).replace(/'/g,"\\'")}')">Tip ETH</button>` + actionsHtml;
-              $("#profile-actions").innerHTML = actionsHtml;
-            }
-          }).catch(() => {});
-          actionsHtml += `<button class="profile-action-btn" onclick="openDM(null,'${escapeHtml(username).replace(/'/g,"\\'")}',null)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> Message</button>`;
-          $("#profile-handle").innerHTML = `<a href="https://x.com/${escapeHtml(username.slice(1))}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(username)}</a>`;
-          $("#profile-posts-list").innerHTML = '<div class="post-empty">This user hasn\'t signed up yet</div>';
+    const iconStyle = "background:none;border:none;color:var(--text-muted);cursor:pointer;padding:6px;transition:color 0.15s;display:inline-flex;align-items:center;";
+    const ethIcon = `<svg width="16" height="16" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF" fill-rule="nonzero"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></svg>`;
+    let fallbackActions = "";
+    if (isWalletAddress) {
+      fallbackActions += `<button style="${iconStyle}" onclick="tipUser('${escapeHtml(username.toLowerCase())}','${escapeHtml(displayName).replace(/'/g,"\\'")}')"> ${ethIcon}</button>`;
+      fallbackActions += `<button style="${iconStyle}" onclick="openDM(null,'${escapeHtml(username.toLowerCase()).replace(/'/g,"\\'")}',null)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></button>`;
+      $("#profile-handle").innerHTML = `<a href="https://etherscan.io/address/${escapeHtml(username)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(username.slice(0,10))}...${escapeHtml(username.slice(-8))}</a>`;
+      $("#profile-posts-list").innerHTML = '<div class="post-empty">This address hasn\'t signed up yet</div>';
+    } else if (isXHandle) {
+      fallbackActions += `<button style="${iconStyle}" onclick="openDM(null,'${escapeHtml(username).replace(/'/g,"\\'")}',null)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></button>`;
+      $("#profile-handle").innerHTML = `<a href="https://x.com/${escapeHtml(username.slice(1))}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(username)}</a>`;
+      $("#profile-posts-list").innerHTML = '<div class="post-empty">This user hasn\'t signed up yet</div>';
+      // Try to get X-derived wallet for tipping
+      fetch(`/api/x-wallet/${encodeURIComponent(username.slice(1))}`).then(r => r.ok ? r.json() : null).then(data => {
+        if (data?.address) {
+          const tipBtn = `<button style="${iconStyle}" onclick="tipUser('${escapeHtml(data.address)}','${escapeHtml(username).replace(/'/g,"\\'")}')"> ${ethIcon}</button>`;
+          $("#profile-actions").innerHTML = tipBtn + $("#profile-actions").innerHTML;
         }
-        $("#profile-actions").innerHTML = actionsHtml;
-      }
-    }, 2000);
+      }).catch(() => {});
+    }
+    fallbackActions += `<button style="${iconStyle}" onclick="copyProfileLink('${escapeHtml(username).replace(/'/g,"\\'")}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></button>`;
+    $("#profile-actions").innerHTML = fallbackActions;
+    // If server profile data comes back and resolves to a registered user, handleProfileData will overwrite this
   }
 }
 
@@ -4709,6 +4724,7 @@ function handleProfileData(data) {
     // Update own score ticker if viewing own profile
     if (profileIsOwn) { updateSocialScoreBase(data.socialScore.score); startSocialScoreTicker(); }
   }
+  if (data.followers > 0) statsHtml += `<div><span>${data.followers}</span> follower${data.followers !== 1 ? "s" : ""}</div>`;
   if (data.postCount > 0) statsHtml += `<div><span>${data.postCount}</span> posts</div>`;
   if (data.stats?.totalMeets > 0) statsHtml += `<div><span>${data.stats.totalMeets}</span> meets</div>`;
   if (data.stats?.received > 0) statsHtml += `<div><span>${pickupRate(data.stats)}%</span> pickup</div>`;
@@ -4873,9 +4889,9 @@ function renderPost(post, isThread = false) {
   const isOwn = myName && (post.author === myName.toLowerCase());
   const liked = post.likers && post.likers.includes(myName?.toLowerCase().trim());
 
-  let html = `<div class="post" data-post-id="${post.id}">`;
+  let html = `<div class="post" data-post-id="${post.id}" style="${isThread && post.parentId ? 'padding-top:8px;padding-bottom:8px;' : ''}">`;
   if (post.parentId && !isThread) {
-    html += `<div class="post-reply-indicator">replying to a post</div>`;
+    html += `<div class="post-reply-indicator">replying to a post · <span style="cursor:pointer;text-decoration:underline;" onclick="showThread('${post.parentId || post.rootId || post.id}')">view thread</span></div>`;
   }
   html += `<div class="post-header">
     <div class="post-pfp" style="${bg}">${inner}</div>
@@ -4889,7 +4905,7 @@ function renderPost(post, isThread = false) {
       <svg width="14" height="14" viewBox="0 0 24 24" fill="${liked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
       ${post.likeCount || 0}
     </button>
-    <button class="post-action" onclick="showThread('${post.id}')">
+    <button class="post-action" onclick="${isThread ? `focusReply('${post.rootId || post.id}','${escapeHtml(post.authorName || post.author).replace(/'/g,"\\'")}')` : `showThread('${post.id}')`}">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
       ${post.replyCount || 0}
     </button>
@@ -4903,6 +4919,15 @@ function renderPost(post, isThread = false) {
 
 window.togglePostLike = function(postId) {
   if (socket) socket.emit("toggle-like", { postId });
+};
+
+window.focusReply = function(rootId, authorName) {
+  const replyInput = document.getElementById("reply-input-" + rootId);
+  if (replyInput) {
+    replyInput.placeholder = `Reply to ${authorName}...`;
+    replyInput.focus();
+    replyInput.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 };
 
 window.deletePost = function(postId) {
@@ -4964,6 +4989,7 @@ function renderNotifications(notifications) {
     else if (n.type === "dm") text = `<strong>${escapeHtml(n.fromUser)}</strong>: ${escapeHtml(n.preview || "")}`;
     else if (n.type === "poke") text = `<strong>${escapeHtml(n.fromUser)}</strong> poked you 👋`;
     else if (n.type === "call_request") text = `<strong>${escapeHtml(n.fromUser)}</strong> wants to call you 📞`;
+    else if (n.type === "post") text = `<strong>${escapeHtml(n.fromUser)}</strong> posted: ${escapeHtml(n.preview || "")}`;
     else if (n.type === "tip") text = `<strong>${escapeHtml(n.fromUser)}</strong> tipped you ${escapeHtml(n.preview || "")} 💰`;
     let onclick;
     if (n.postId) onclick = `showProfile(profileTarget||'${escapeHtml(myName).replace(/'/g,"\\'")}');showThread('${n.postId}')`;

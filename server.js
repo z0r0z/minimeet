@@ -1982,6 +1982,20 @@ io.on("connection", (socket) => {
         emitNotification(parent.author, notif);
       }
     }
+    // Notify users who have saved this author as a contact (top-level posts only)
+    if (!parentId) {
+      const authorKey = userData.name.toLowerCase().trim();
+      const authorXKey = userData.xUsername ? "@" + userData.xUsername.toLowerCase() : null;
+      // Check all online users' contacts
+      for (const [uid, udata] of onlineUsers) {
+        if (uid === userId || udata.disconnectedAt) continue;
+        const contacts = contactsCache.get(udata.name.toLowerCase().trim());
+        if (contacts && (contacts.has(authorKey) || (authorXKey && contacts.has(authorXKey)))) {
+          const notif = await dbCreateNotification(udata.name, "post", userData.name, post.id, (trimmed || "").slice(0, 60));
+          emitNotification(udata.name, notif);
+        }
+      }
+    }
   });
 
   socket.on("delete-post", async ({ postId }) => {
@@ -2133,7 +2147,29 @@ io.on("connection", (socket) => {
     if (viewerData && viewerData.name.toLowerCase() !== key) {
       pairInfo = await dbGetPairMeetings(viewerData.name, key);
     }
-    socket.emit("profile", { username: key, displayName, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, appWalletAddress: profile.appWalletAddress || null, stats, postCount, customStatus: profile.customStatus || null, socialScore, pairInfo });
+    // Count followers (how many users have saved this person as a contact)
+    let followers = 0;
+    if (supabase) {
+      try {
+        const xKey = xUsername ? "@" + xUsername.toLowerCase() : null;
+        let query = supabase.from("contacts").select("owner", { count: "exact", head: true }).eq("contact_name", key);
+        const { count: c1 } = await query;
+        followers = c1 || 0;
+        if (xKey) {
+          const { count: c2 } = await supabase.from("contacts").select("owner", { count: "exact", head: true }).eq("contact_name", xKey);
+          followers += c2 || 0;
+        }
+      } catch {}
+    } else {
+      const store = jsonStores["contacts"] || {};
+      for (const val of Object.values(store)) {
+        try {
+          const contacts = JSON.parse(val);
+          if (contacts.includes(key) || (xUsername && contacts.includes("@" + xUsername.toLowerCase()))) followers++;
+        } catch {}
+      }
+    }
+    socket.emit("profile", { username: key, displayName, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, appWalletAddress: profile.appWalletAddress || null, stats, postCount, followers, customStatus: profile.customStatus || null, socialScore, pairInfo });
   });
 
   socket.on("update-profile", async ({ bio, banner }) => {
@@ -2355,7 +2391,7 @@ io.on("connection", (socket) => {
   socket.on("stream-tip", async ({ streamId, amount, txHash, message }) => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
-    if (!streamId || !amount || !txHash) return;
+    if (!streamId || !amount || !txHash || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) return;
     const stream = activeStreams.get(streamId); if (!stream) return;
     const tipMsg = { type: "tip", sender: userData.name, avatar: userData.avatar || null, amount, message: (message || "").slice(0, 100), txHash };
     // Broadcast to streamer + all viewers
@@ -2377,7 +2413,7 @@ io.on("connection", (socket) => {
   socket.on("call-tip", async ({ callId, amount, txHash, message }) => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
-    if (!callId || !amount || !txHash) return;
+    if (!callId || !amount || !txHash || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) return;
     const call = activeCalls.get(callId); if (!call) return;
     const otherId = call.callerId === userId ? call.calleeId : call.callerId;
     const otherData = onlineUsers.get(otherId);
