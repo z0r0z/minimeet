@@ -440,6 +440,8 @@
     .post-action:hover { color: var(--text); }
     .post-action.liked { color: var(--red); }
     .post-action.liked svg { fill: var(--red); }
+    .post-action.reposted { color: #17bf63; }
+    .post-action.reposted svg { stroke: #17bf63; }
     .post-compose {
       padding: 12px 0; border-bottom: 1px solid var(--border);
       display: flex; gap: 8px;
@@ -4286,6 +4288,21 @@ function connectSocket() {
     });
   });
 
+  socket.on("post-reposted", ({ postId, reposted, reposters }) => {
+    showToast(reposted ? "Reposted!" : "Removed repost", reposted ? "success" : "info");
+    const count = reposters ? reposters.length : 0;
+    // Update repost button state and count across all views
+    document.querySelectorAll(`.post[data-post-id="${postId}"]`).forEach(postEl => {
+      const btns = postEl.querySelectorAll(".post-action");
+      btns.forEach(btn => {
+        if (btn.classList.contains("reposted") || btn.querySelector('polyline[points="17 1 21 5 17 9"]')) {
+          btn.className = `post-action${reposted ? " reposted" : ""}`;
+          btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg> ${count > 0 ? count : ""}`;
+        }
+      });
+    });
+  });
+
   socket.on("post-error", ({ message }) => { showToast(message, "error"); });
 
   socket.on("thread", ({ postId, posts }) => {
@@ -4389,6 +4406,7 @@ function connectSocket() {
     else if (notif.type === "call_request") showToast(`📞 ${notif.fromUser} wants to call you — check notifications`, "info", 5000);
     else if (notif.type === "post") showToast(`${notif.fromUser} posted: ${(notif.preview || "").slice(0, 40)}`, "info", 3000);
     else if (notif.type === "follow") showToast(`${notif.fromUser} followed you`, "success", 2000);
+    else if (notif.type === "repost") showToast(`${notif.fromUser} reposted your post`, "info", 2000);
     else if (notif.type === "tip") showToast(`💰 ${notif.fromUser} tipped you ${notif.preview}!`, "success", 5000);
   });
 
@@ -4938,8 +4956,12 @@ function renderPost(post, isThread = false) {
   const inner = avatar ? "" : `<span style="font-family:var(--font-mono);font-size:9px;font-weight:700;color:#fff">${initials}</span>`;
   const isOwn = myName && (post.author === myName.toLowerCase());
   const liked = post.likers && post.likers.includes(myName?.toLowerCase().trim());
+  const reposted = post.reposters && post.reposters.includes(myName?.toLowerCase().trim());
 
   let html = `<div class="post" data-post-id="${post.id}" style="${isThread && post.parentId ? 'padding-top:8px;padding-bottom:8px;' : ''}">`;
+  if (post.repostedBy) {
+    html += `<div class="post-reply-indicator" style="display:flex;align-items:center;gap:4px;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg> <span style="cursor:pointer;text-decoration:underline;" onclick="showProfile('${escapeHtml(post.repostedBy).replace(/'/g,"\\'")}')">${escapeHtml(post.repostedBy)}</span> reposted</div>`;
+  }
   if (post.parentId && !isThread) {
     html += `<div class="post-reply-indicator">replying to a post · <span style="cursor:pointer;text-decoration:underline;" onclick="showThread('${post.parentId || post.rootId || post.id}')">view thread</span></div>`;
   }
@@ -4959,6 +4981,10 @@ function renderPost(post, isThread = false) {
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
       ${post.replyCount || 0}
     </button>
+    ${!isOwn ? `<button class="post-action${reposted ? ' reposted' : ''}" onclick="toggleRepost('${post.id}')">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+      ${post.reposters && post.reposters.length > 0 ? post.reposters.length : ""}
+    </button>` : ""}
     ${isOwn ? `<button class="post-action" onclick="deletePost('${post.id}')" title="Delete">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
     </button>` : ""}
@@ -4969,6 +4995,10 @@ function renderPost(post, isThread = false) {
 
 window.togglePostLike = function(postId) {
   if (socket) socket.emit("toggle-like", { postId });
+};
+
+window.toggleRepost = function(postId) {
+  if (socket) socket.emit("toggle-repost", { postId });
 };
 
 window.toggleProfileFollow = function(name, xUsername) {
@@ -5072,6 +5102,7 @@ function renderNotifications(notifications) {
     else if (n.type === "call_request") text = `<strong>${escapeHtml(n.fromUser)}</strong> wants to call you 📞`;
     else if (n.type === "post") text = `<strong>${escapeHtml(n.fromUser)}</strong> posted: ${escapeHtml(n.preview || "")}`;
     else if (n.type === "follow") text = `<strong>${escapeHtml(n.fromUser)}</strong> followed you`;
+    else if (n.type === "repost") text = `<strong>${escapeHtml(n.fromUser)}</strong> reposted your post`;
     else if (n.type === "tip") text = `<strong>${escapeHtml(n.fromUser)}</strong> tipped you ${escapeHtml(n.preview || "")} 💰`;
     let onclick;
     if (n.postId) onclick = `showProfile(profileTarget||'${escapeHtml(myName).replace(/'/g,"\\'")}');showThread('${n.postId}')`;

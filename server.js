@@ -805,6 +805,77 @@ async function dbGetPostLikes(postId) {
   return likes.filter(l => l.postId === postId).map(l => l.userName);
 }
 
+async function dbToggleRepost(postId, userName) {
+  const user = userName.toLowerCase().trim();
+  if (supabase) {
+    try {
+      const { data: existing } = await supabase.from("reposts").select("post_id").eq("post_id", postId).eq("user_name", user).maybeSingle();
+      if (existing) {
+        await supabase.from("reposts").delete().eq("post_id", postId).eq("user_name", user);
+        return { reposted: false };
+      } else {
+        await supabase.from("reposts").insert({ post_id: postId, user_name: user, created_at: new Date().toISOString() });
+        return { reposted: true };
+      }
+    } catch (e) { console.warn("Repost toggle error:", e.message); return { reposted: false }; }
+  }
+  const stored = jsonGet("reposts", "_all");
+  let reposts; try { reposts = stored ? JSON.parse(stored) : []; } catch { reposts = []; }
+  const idx = reposts.findIndex(r => r.postId === postId && r.userName === user);
+  if (idx >= 0) {
+    reposts.splice(idx, 1);
+    jsonSet("reposts", "_all", JSON.stringify(reposts));
+    return { reposted: false };
+  } else {
+    reposts.push({ postId, userName: user, createdAt: Date.now() });
+    jsonSet("reposts", "_all", JSON.stringify(reposts));
+    return { reposted: true };
+  }
+}
+
+async function dbGetUserReposts(userName, limit = 20) {
+  const user = userName.toLowerCase().trim();
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("reposts").select("post_id, created_at").eq("user_name", user).order("created_at", { ascending: false }).limit(limit);
+      if (!data || data.length === 0) return [];
+      const postIds = data.map(d => d.post_id);
+      const repostTimes = {};
+      data.forEach(d => { repostTimes[d.post_id] = new Date(d.created_at).getTime(); });
+      const { data: posts } = await supabase.from("posts").select("*").in("id", postIds);
+      return (posts || []).map(d => ({
+        id: d.id, author: d.author, text: d.text, parentId: d.parent_id, rootId: d.root_id,
+        image: d.image || null, likeCount: d.like_count || 0, replyCount: d.reply_count || 0,
+        createdAt: new Date(d.created_at).getTime(), repostedAt: repostTimes[d.id] || 0, repostedBy: user
+      })).sort((a, b) => b.repostedAt - a.repostedAt);
+    } catch (e) { console.warn("Get reposts error:", e.message); }
+    return [];
+  }
+  const stored = jsonGet("reposts", "_all");
+  let reposts; try { reposts = stored ? JSON.parse(stored) : []; } catch { reposts = []; }
+  const userReposts = reposts.filter(r => r.userName === user).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+  const postsStored = jsonGet("posts", "_all");
+  let posts; try { posts = postsStored ? JSON.parse(postsStored) : []; } catch { posts = []; }
+  return userReposts.map(r => {
+    const p = posts.find(pp => pp.id === r.postId);
+    if (!p) return null;
+    return { ...p, repostedAt: r.createdAt, repostedBy: user };
+  }).filter(Boolean);
+}
+
+async function dbGetPostReposters(postId) {
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("reposts").select("user_name").eq("post_id", postId);
+      return (data || []).map(d => d.user_name);
+    } catch {}
+    return [];
+  }
+  const stored = jsonGet("reposts", "_all");
+  let reposts; try { reposts = stored ? JSON.parse(stored) : []; } catch { reposts = []; }
+  return reposts.filter(r => r.postId === postId).map(r => r.userName);
+}
+
 async function dbGetGlobalFeed(limit = 30) {
   if (supabase) {
     try {
@@ -2036,12 +2107,33 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("toggle-repost", async ({ postId }) => {
+    if (!rateLimit(socket, "repost", 10, 10_000)) return;
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const post = await dbGetPost(postId);
+    if (!post) return;
+    // Can't repost own posts
+    if (post.author === userData.name.toLowerCase()) {
+      socket.emit("post-error", { message: "Can't repost your own post" });
+      return;
+    }
+    const result = await dbToggleRepost(postId, userData.name);
+    const reposters = await dbGetPostReposters(postId);
+    socket.emit("post-reposted", { postId, reposted: result.reposted, reposters });
+    // Notify original poster on repost
+    if (result.reposted) {
+      const notif = await dbCreateNotification(post.author, "repost", userData.name, postId, null);
+      emitNotification(post.author, notif);
+    }
+  });
+
   socket.on("get-user-posts", async ({ username, limit, offset }) => {
     if (!username || typeof username !== "string") return;
     const result = await dbGetUserPosts(username, limit || 20, offset || 0);
     const userData = socket.userId ? onlineUsers.get(socket.userId) : null;
     const myNameLower = userData ? userData.name.toLowerCase() : "";
-    // Get author avatar once for all posts (same author)
+    // Get author avatar once for all own posts (same author)
     const authorAvatar = await dbGetAvatar(username) || null;
     for (const post of result.posts) {
       post.authorName = username;
@@ -2049,8 +2141,27 @@ io.on("connection", (socket) => {
       const likers = await dbGetPostLikes(post.id);
       post.likers = likers;
       post.liked = myNameLower ? likers.includes(myNameLower) : false;
+      const reposters = await dbGetPostReposters(post.id);
+      post.reposters = reposters;
     }
-    socket.emit("user-posts", { username, ...result });
+    // Fetch reposts by this user and merge into the list
+    const reposts = await dbGetUserReposts(username, limit || 20);
+    const avatarCache = { [username.toLowerCase()]: authorAvatar };
+    for (const rp of reposts) {
+      if (!avatarCache[rp.author]) avatarCache[rp.author] = await dbGetAvatar(rp.author) || null;
+      rp.authorName = rp.author;
+      rp.authorAvatar = avatarCache[rp.author];
+      const likers = await dbGetPostLikes(rp.id);
+      rp.likers = likers;
+      rp.liked = myNameLower ? likers.includes(myNameLower) : false;
+      const reposters = await dbGetPostReposters(rp.id);
+      rp.reposters = reposters;
+    }
+    // Merge and sort by time, dedup by post ID (own posts take priority over reposts)
+    const ownIds = new Set(result.posts.map(p => p.id));
+    const dedupedReposts = reposts.filter(rp => !ownIds.has(rp.id));
+    const merged = [...result.posts, ...dedupedReposts].sort((a, b) => (b.repostedAt || b.createdAt) - (a.repostedAt || a.createdAt));
+    socket.emit("user-posts", { username, posts: merged, total: merged.length });
   });
 
   socket.on("get-thread", async ({ postId }) => {
@@ -2074,6 +2185,8 @@ io.on("connection", (socket) => {
       const likers = await dbGetPostLikes(post.id);
       post.likers = likers;
       post.liked = myNameLower ? likers.includes(myNameLower) : false;
+      const reposters = await dbGetPostReposters(post.id);
+      post.reposters = reposters;
       // Enrich with author avatar/name from directory
       post.authorAvatar = await dbGetAvatar(post.author) || null;
       post.authorName = post.author;
