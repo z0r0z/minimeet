@@ -1199,7 +1199,9 @@ async function dbGetSocialScore(name) {
         supabase.from("pair_meetings").select("credit_seconds").like("pair", `${safeKey}:%`),
         supabase.from("pair_meetings").select("credit_seconds").like("pair", `%:${safeKey}`),
       ]);
-      const data = [...(d1 || []), ...(d2 || [])];
+      // Dedup by pair key to avoid double-counting self-pairs (e.g. alice:alice)
+      const seen = new Set();
+      const data = [...(d1 || []), ...(d2 || [])].filter(r => { if (seen.has(r.pair)) return false; seen.add(r.pair); return true; });
       if (data) totalPairCredits = data.reduce((sum, r) => sum + (r.credit_seconds || 0), 0);
     } catch {}
   } else {

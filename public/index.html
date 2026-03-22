@@ -4145,8 +4145,8 @@ function updateMyPfp() {
   const color = getColor(myName);
   const initials = getInitials(myName);
   if (myAvatar) {
-    el.style.backgroundImage = `url(${myAvatar})`;
-    el.style.background = `url(${myAvatar}) center/cover`;
+    el.style.backgroundImage = safeCssUrl(myAvatar);
+    el.style.background = `${safeCssUrl(myAvatar)} center/cover`;
     el.innerHTML = "";
   } else {
     el.style.backgroundImage = "";
