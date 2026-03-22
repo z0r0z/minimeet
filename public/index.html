@@ -2561,12 +2561,38 @@ function promptPassword(message) {
 
 const e2eSharedSecrets = new Map(); // peerName -> { current, legacy } CryptoKeys
 let _e2eKeypairCache = null; // in-memory only — never serialized to storage
+let _e2eKeypairPending = null; // concurrency guard — prevents duplicate password prompts
+// Cache decrypted keypair to sessionStorage so page refresh doesn't re-prompt for password
+function _cacheE2EKeypair(kp) {
+  _e2eKeypairCache = kp;
+  try { sessionStorage.setItem("e2e_keypair_decrypted", JSON.stringify({ publicKey: kp.publicKeyJWK, privateKey: kp.privateKeyJWK })); } catch {}
+}
 
 async function getOrCreateE2EKeypair() {
   // 1. Check in-memory cache (decrypted CryptoKey objects, never serialized)
   if (_e2eKeypairCache) return _e2eKeypairCache;
+  // If another call is already in progress (e.g. password prompt showing), wait for it
+  if (_e2eKeypairPending) return _e2eKeypairPending;
+  // Set concurrency guard so parallel callers wait instead of showing duplicate prompts
+  _e2eKeypairPending = _getOrCreateE2EKeypairInner();
+  try { return await _e2eKeypairPending; } finally { _e2eKeypairPending = null; }
+}
+async function _getOrCreateE2EKeypairInner() {
+  // 2a. Check sessionStorage (decrypted key survives refresh within same tab, no password needed)
+  const sessionCached = sessionStorage.getItem("e2e_keypair_decrypted");
+  if (sessionCached) {
+    try {
+      const kp = JSON.parse(sessionCached);
+      if (kp.privateKey && kp.publicKey) {
+        const priv = await crypto.subtle.importKey("jwk", kp.privateKey, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+        const pub = await crypto.subtle.importKey("jwk", kp.publicKey, { name: "ECDH", namedCurve: "P-256" }, true, []);
+        _cacheE2EKeypair({ privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: kp.privateKey });
+        return _e2eKeypairCache;
+      }
+    } catch { sessionStorage.removeItem("e2e_keypair_decrypted"); }
+  }
 
-  // 2. Check localStorage
+  // 2b. Check localStorage
   const stored = localStorage.getItem("e2e_keypair");
   if (stored) {
     try {
@@ -2585,7 +2611,7 @@ async function getOrCreateE2EKeypair() {
           }
           const priv = await crypto.subtle.importKey("jwk", privJWK, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
           const pub = await crypto.subtle.importKey("jwk", kp.publicKey, { name: "ECDH", namedCurve: "P-256" }, true, []);
-          _e2eKeypairCache = { privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: privJWK };
+          _cacheE2EKeypair({ privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: privJWK });
           return _e2eKeypairCache;
         }
         // User dismissed — fall through to server recovery or generate new
@@ -2604,7 +2630,7 @@ async function getOrCreateE2EKeypair() {
             } catch (e) { console.warn("Key migration failed:", e); }
           }
         }, 2000);
-        _e2eKeypairCache = { privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: kp.privateKey };
+        _cacheE2EKeypair({ privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: kp.privateKey });
         return _e2eKeypairCache;
       }
     } catch { localStorage.removeItem("e2e_keypair"); }
@@ -2632,7 +2658,7 @@ async function getOrCreateE2EKeypair() {
             const priv = await crypto.subtle.importKey("jwk", kp.privateKey, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
             const pub = await crypto.subtle.importKey("jwk", kp.publicKey, { name: "ECDH", namedCurve: "P-256" }, true, []);
             showToast("Encryption key recovered!", "success");
-            _e2eKeypairCache = { privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: kp.privateKey };
+            _cacheE2EKeypair({ privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: kp.privateKey });
             return _e2eKeypairCache;
           } catch { showToast("Wrong password — generating new key", "error"); }
         }
@@ -2666,7 +2692,7 @@ async function getOrCreateE2EKeypair() {
     showToast("DM key created — set a password from your profile for backup", "info", 5000);
   }
 
-  _e2eKeypairCache = { privateKey: keyPair.privateKey, publicKey: keyPair.publicKey, publicKeyJWK: pubJWK, privateKeyJWK: privJWK };
+  _cacheE2EKeypair({ privateKey: keyPair.privateKey, publicKey: keyPair.publicKey, publicKeyJWK: pubJWK, privateKeyJWK: privJWK });
   return _e2eKeypairCache;
 }
 
@@ -2682,6 +2708,8 @@ async function deriveSharedSecret(peerPublicKeyJWK) {
   const cacheKey = JSON.stringify(peerPublicKeyJWK);
   if (e2eSharedSecrets.has(cacheKey)) return e2eSharedSecrets.get(cacheKey);
   const kp = await getOrCreateE2EKeypair();
+  // Register pubkey if this is the first time the key was unlocked (deferred from login)
+  if (socket && kp.publicKeyJWK) socket.emit("register-pubkey", { publicKey: kp.publicKeyJWK });
   const peerKey = await crypto.subtle.importKey("jwk", peerPublicKeyJWK, { name: "ECDH", namedCurve: "P-256" }, false, []);
   const sharedBits = await crypto.subtle.deriveBits({ name: "ECDH", public: peerKey }, kp.privateKey, 256);
   // v2: HKDF-SHA256 derived key (correct practice)
@@ -2821,7 +2849,7 @@ window.importE2EKey = function() {
         } else {
           localStorage.setItem("e2e_keypair", text);
         }
-        _e2eKeypairCache = null; // force re-derive on next use
+        _e2eKeypairCache = null; sessionStorage.removeItem("e2e_keypair_decrypted"); // force re-derive on next use
       } else if (kp.privateKey) {
         // Legacy plaintext export — verify and store
         await crypto.subtle.importKey("jwk", kp.privateKey, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
@@ -4710,14 +4738,38 @@ function connectSocket() {
     resetIdleTimer();
     loadStats();
     loadDirectory();
-    // Register E2E public key for encrypted DMs
-    getOrCreateE2EKeypair().then(kp => {
-      if (socket && kp.publicKeyJWK) socket.emit("register-pubkey", { publicKey: kp.publicKeyJWK });
-    }).catch(e => console.warn("E2E key setup failed:", e));
-    // Initialize app wallet
-    getOrCreateAppWallet().then(w => {
-      if (socket && w?.address) socket.emit("register-app-wallet", { address: w.address });
-    }).catch(e => console.warn("App wallet setup failed:", e));
+    // Register E2E public key silently if already cached — don't prompt for password on login.
+    // Full key creation (with password prompt) is deferred to when user actually opens DMs.
+    if (_e2eKeypairCache) {
+      if (socket && _e2eKeypairCache.publicKeyJWK) socket.emit("register-pubkey", { publicKey: _e2eKeypairCache.publicKeyJWK });
+    } else {
+      // Try loading from sessionStorage/localStorage without prompting
+      const cached = sessionStorage.getItem("e2e_keypair_decrypted");
+      const stored = !cached && localStorage.getItem("e2e_keypair");
+      const silent = cached || stored;
+      if (silent) {
+        try {
+          const kp = JSON.parse(silent);
+          // Only register if key is in plaintext or already-decrypted format (no password needed)
+          if (kp.privateKey && kp.publicKey) {
+            if (socket) socket.emit("register-pubkey", { publicKey: kp.publicKey });
+          }
+        } catch {}
+      }
+      // If key is encrypted (needs password), pubkey will be registered when user first opens DMs
+    }
+    // Register app wallet address silently if available — don't prompt for password on login.
+    // Full wallet unlock (with password) is deferred to when user actually sends a transaction.
+    const storedWallet = localStorage.getItem("mm_app_wallet");
+    if (storedWallet) {
+      try {
+        const wd = JSON.parse(storedWallet);
+        const addr = wd.address;
+        if (addr && socket) socket.emit("register-app-wallet", { address: addr });
+        if (wd.privateKey) myAppWallet = { address: addr, privateKey: wd.privateKey }; // plaintext legacy
+        else myAppWallet = { address: addr, privateKey: null }; // encrypted or address-only
+      } catch {}
+    }
     // Show wallet connect button in top-right (Wallet.js) for all logged-in users
     if (!document.getElementById('walletBtn')) {
       walletInit({ appName: 'minimeet.cc' });

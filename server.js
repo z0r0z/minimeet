@@ -2233,6 +2233,7 @@ io.on("connection", (socket) => {
       dbLoadDMs(myKey, peerKey, safeLimit, safeBefore),
       safeBefore ? Promise.resolve(0) : dbGetReadCursor(peerKey, myKey), // only load on initial fetch
     ]);
+    if (messages.length === 0) console.log(`📭 dm-history: no messages for pair ${myKey}:${peerKey}`);
     socket.emit("dm-history", { peerName, messages, hasMore: messages.length === safeLimit, peerReadAt: peerReadAt || 0 });
   });
 
@@ -3125,7 +3126,7 @@ app.get("/api/dm-conversations", async (req, res) => {
         }
         return res.json([...convos.values()].sort((a, b) => b.lastTime - a.lastTime));
       }
-    } catch {}
+    } catch (e) { console.warn("dm-conversations query error:", e.message); }
   } else {
     const store = jsonStores["direct_messages"] || {};
     const convos = [];
