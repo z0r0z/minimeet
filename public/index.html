@@ -4073,6 +4073,7 @@ function connectSocket() {
   // ── Chat events ───────────────────────────────────────────────────────
   socket.on("chat-public", (msg) => {
     renderChatMsg(msg, $("#chat-messages"));
+    if (msg.userId !== myUserId) playNotifSound();
     if (!chatOpen && msg.userId !== myUserId) {
       chatUnread++;
       const badge = $("#chat-unread");
@@ -4231,6 +4232,17 @@ function connectSocket() {
     if (activeTab === "feed") loadGlobalFeed();
   });
 
+  socket.on("feed-new-post", (post) => {
+    playNotifSound();
+    // Prepend to feed if it's visible
+    const list = document.getElementById("feed-list");
+    if (list) {
+      const empty = list.querySelector(".post-empty");
+      if (empty) empty.remove();
+      list.insertAdjacentHTML("afterbegin", renderPost(post));
+    }
+  });
+
   socket.on("global-feed", ({ posts }) => {
     const list = document.getElementById("feed-list");
     if (!list) return;
@@ -4248,15 +4260,14 @@ function connectSocket() {
   });
 
   socket.on("post-liked", ({ postId, likeCount, liked, likers }) => {
-    // Update the like button in DOM
-    const postEl = document.querySelector(`.post[data-post-id="${postId}"]`);
-    if (postEl) {
+    // Update ALL matching like buttons in DOM (feed + profile can show same post)
+    document.querySelectorAll(`.post[data-post-id="${postId}"]`).forEach(postEl => {
       const likeBtn = postEl.querySelector(".post-action");
       if (likeBtn) {
         likeBtn.className = `post-action${liked ? " liked" : ""}`;
         likeBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="${liked ? "currentColor" : "none"}" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg> ${likeCount}`;
       }
-    }
+    });
   });
 
   socket.on("post-error", ({ message }) => { showToast(message, "error"); });

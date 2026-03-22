@@ -753,7 +753,7 @@ async function dbToggleLike(postId, userName) {
   const user = userName.toLowerCase().trim();
   if (supabase) {
     try {
-      const { data: existing } = await supabase.from("post_likes").select("post_id").eq("post_id", postId).eq("user_name", user).single();
+      const { data: existing } = await supabase.from("post_likes").select("post_id").eq("post_id", postId).eq("user_name", user).maybeSingle();
       if (existing) {
         await supabase.from("post_likes").delete().eq("post_id", postId).eq("user_name", user);
         try { await supabase.rpc("decrement_post_like_count", { pid: postId }); } catch {
@@ -1983,6 +1983,10 @@ io.on("connection", (socket) => {
     post.authorAvatar = userData.avatar || null;
     post.authorXUsername = userData.xUsername || null;
     socket.emit("post-created", post);
+    // Broadcast new top-level posts to all connected users so feeds update in real time
+    if (!parentId) {
+      socket.broadcast.emit("feed-new-post", post);
+    }
     // Notify parent post author on reply
     if (parentId) {
       const parent = await dbGetPost(parentId);
