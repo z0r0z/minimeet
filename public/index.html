@@ -795,12 +795,12 @@
 
     /* My stats bar */
     .my-stats {
-      display: flex; align-items: center; gap: 6px;
-      font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
-      background: var(--surface); padding: 4px 10px; border-radius: 8px;
+      display: flex; align-items: center; gap: 4px;
+      font-family: var(--font-mono); font-size: 9px; color: #555;
+      padding: 0; flex-wrap: wrap;
     }
-    .my-stats-item { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
-    .my-stats-item span { color: var(--text); font-weight: 700; }
+    .my-stats-item { display: flex; align-items: center; gap: 2px; white-space: nowrap; }
+    .my-stats-item span { color: #888; font-weight: 600; }
     .my-stats:empty { display: none; }
     /* Auto-Meet toggle */
     .auto-meet-toggle {
@@ -1285,6 +1285,7 @@
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 10px; color: var(--text);
       font-size: 13px; font-family: var(--font-body); outline: none;
+      resize: none; min-height: 20px; max-height: 60px; line-height: 1.4;
     }
     .chat-input::placeholder { color: #444; }
     .chat-send {
@@ -1402,6 +1403,24 @@
       max-width: 200px; max-height: 150px; border-radius: 8px;
       margin-top: 4px; cursor: pointer; display: block;
     }
+    .dm-emoji-bar {
+      display: none; padding: 4px 8px; gap: 2px;
+      flex-wrap: wrap; border-top: 1px solid var(--border);
+    }
+    .dm-emoji-bar.active { display: flex; }
+    .dm-emoji-bar button {
+      background: none; border: none; font-size: 18px; cursor: pointer;
+      padding: 4px 6px; border-radius: 6px; transition: background 0.1s;
+    }
+    .dm-emoji-bar button:hover { background: var(--surface-hover); }
+    .stream-tip-msg {
+      background: linear-gradient(135deg, rgba(232,168,60,0.15), rgba(232,69,60,0.1));
+      border: 1px solid rgba(232,168,60,0.3); border-radius: 8px;
+      padding: 8px 12px; margin: 4px 8px; animation: slideUp 0.3s ease;
+    }
+    .stream-tip-msg .tip-amount { color: var(--amber); font-weight: 700; font-family: var(--font-mono); }
+    .stream-tip-msg .tip-sender { font-weight: 600; }
+    .stream-tip-msg .tip-message { font-size: 12px; color: #ccc; margin-top: 2px; }
     /* Poke button on contact cards */
     .poke-btn {
       width: 32px; height: 32px; border-radius: 8px;
@@ -1565,7 +1584,11 @@
         <div class="dm-empty">Send a message...</div>
       </div>
       <div class="dm-image-preview" id="dm-image-preview"></div>
+      <div class="dm-emoji-bar" id="dm-emoji-bar"></div>
       <div class="dm-input-row">
+        <button class="quick-post-img-btn" id="dm-emoji-toggle" title="Emoji">
+          <span style="font-size:14px;">😊</span>
+        </button>
         <button class="quick-post-img-btn" id="dm-img-btn" title="Send image">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
         </button>
@@ -1753,7 +1776,7 @@
     <div class="chat-panel active" id="chat-panel">
       <div class="chat-messages" id="chat-messages"></div>
       <div class="chat-input-row">
-        <input type="text" class="chat-input" id="chat-input" placeholder="Say something..." maxlength="500" />
+        <textarea class="chat-input" id="chat-input" placeholder="Say something..." maxlength="500" rows="1"></textarea>
         <button class="chat-send" id="chat-send">Send</button>
       </div>
     </div>
@@ -1855,6 +1878,7 @@
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
         <span class="call-chat-badge" id="call-chat-badge">0</span>
       </button>
+      <button class="ctrl-btn" id="call-tip-btn" title="Tip" onclick="tipCallPartner()" style="font-size:14px;">💰</button>
       <button class="ctrl-btn extend-btn" id="extend-call-btn" title="Extend call (+30s)" style="display:none;" onclick="extendCall()">
         <span style="font-size:11px;font-family:var(--font-mono);font-weight:700;">+30s</span>
       </button>
@@ -1919,6 +1943,7 @@
       <div class="chat-input-row">
         <input type="text" class="chat-input" id="stream-chat-input" placeholder="Chat..." maxlength="500" />
         <button class="chat-send" id="stream-chat-send">Send</button>
+        <button class="chat-send" id="stream-tip-btn" style="background:none;border:1px solid var(--border);color:var(--text-muted);font-size:11px;padding:4px 8px;" title="Tip streamer">💰</button>
       </div>
     </div>
 
@@ -1951,6 +1976,7 @@
         <button class="link-btn" onclick="document.getElementById('tip-amount').value='0.05'">0.05</button>
         <button class="link-btn" onclick="document.getElementById('tip-amount').value='0.1'">0.1</button>
       </div>
+      <input type="text" id="tip-message" placeholder="Add a message (optional)" maxlength="100" style="width:100%;margin-top:8px;padding:8px;background:var(--surface);border:1px solid var(--border);color:var(--text);font-size:12px;outline:none;border-radius:8px;box-sizing:border-box;" />
       <div class="status-input-actions" style="margin-top:12px;">
         <button onclick="closeTipOverlay()">Cancel</button>
         <button class="primary" onclick="confirmTip()">Send Tip</button>
@@ -2143,7 +2169,7 @@ async function getOrCreateE2EKeypair() {
     // Slight delay so UI is ready
     setTimeout(async () => {
       const password = prompt("Create an encryption password for your DM key.\nThis protects your key backup so you can recover DMs on other devices.\nThe server cannot read your messages without this password.");
-      if (password && password.length >= 4) {
+      if (password && password.length >= 8) {
         try {
           const encrypted = await encryptWithPassword(JSON.stringify(keypairData), password);
           socket.emit("backup-e2e-key", { e2eKey: encrypted });
@@ -2213,7 +2239,7 @@ async function encryptWithPassword(plaintext, password) {
   const enc = new TextEncoder();
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits", "deriveKey"]);
-  const aesKey = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+  const aesKey = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 600000, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey, enc.encode(plaintext));
   // Pack: salt (16) + iv (12) + ciphertext
@@ -2229,9 +2255,15 @@ async function decryptWithPassword(ciphertextB64, password) {
   const iv = raw.slice(16, 28);
   const ciphertext = raw.slice(28);
   const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits", "deriveKey"]);
-  const aesKey = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
-  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, ciphertext);
-  return new TextDecoder().decode(decrypted);
+  // Try 600k iterations first (current), fall back to 100k (legacy)
+  for (const iter of [600000, 100000]) {
+    try {
+      const aesKey = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: iter, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+      const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, ciphertext);
+      return new TextDecoder().decode(decrypted);
+    } catch {}
+  }
+  throw new Error("Decryption failed");
 }
 
 window.exportE2EKey = function() {
@@ -2269,6 +2301,136 @@ window.importE2EKey = function() {
   };
   input.click();
 };
+
+// ── App Wallet (auto-generated for every user) ─────────────────────────
+
+let myAppWallet = null; // { address, privateKey } — only in memory while logged in
+
+// Encrypt private key with password (AES-GCM, PBKDF2 600k iterations, AAD = address)
+async function encryptWalletKey(privateKey, password, address) {
+  const enc = new TextEncoder();
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const km = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 600000, hash: "SHA-256" }, km, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: enc.encode(address.toLowerCase()) }, key, enc.encode(privateKey));
+  return JSON.stringify({ address: address.toLowerCase(), ct: btoa(String.fromCharCode(...new Uint8Array(ct))), iv: btoa(String.fromCharCode(...iv)), salt: btoa(String.fromCharCode(...salt)) });
+}
+
+async function decryptWalletKey(payload, password) {
+  const enc = new TextEncoder();
+  const data = typeof payload === "string" ? JSON.parse(payload) : payload;
+  const ct = Uint8Array.from(atob(data.ct), c => c.charCodeAt(0));
+  const iv = Uint8Array.from(atob(data.iv), c => c.charCodeAt(0));
+  const salt = Uint8Array.from(atob(data.salt), c => c.charCodeAt(0));
+  const km = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 600000, hash: "SHA-256" }, km, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData: enc.encode(data.address) }, key, ct);
+  return { address: data.address, privateKey: new TextDecoder().decode(pt) };
+}
+
+async function getOrCreateAppWallet() {
+  // Check localStorage for existing wallet
+  const stored = localStorage.getItem("mm_app_wallet");
+  if (stored) {
+    try {
+      const data = JSON.parse(stored);
+      if (data.privateKey) {
+        // Legacy plaintext or in-session key
+        myAppWallet = { address: data.address, privateKey: data.privateKey };
+        return myAppWallet;
+      }
+      if (data.ct) {
+        // Encrypted — need password to unlock
+        const password = prompt("Enter your password to unlock your app wallet:");
+        if (password) {
+          const w = await decryptWalletKey(data, password);
+          myAppWallet = w;
+          return myAppWallet;
+        }
+        // Can't unlock — but we know the address
+        myAppWallet = { address: data.address, privateKey: null };
+        return myAppWallet;
+      }
+      if (data.address && !data.ct && !data.privateKey) {
+        // Address-only (user skipped password before) — still valid for receiving
+        myAppWallet = { address: data.address, privateKey: null };
+        return myAppWallet;
+      }
+    } catch { localStorage.removeItem("mm_app_wallet"); }
+  }
+
+  // Try to recover from server backup
+  if (socket) {
+    try {
+      const serverBackup = await new Promise((resolve) => {
+        socket.emit("get-app-wallet");
+        const handler = ({ wallet }) => { socket.off("app-wallet", handler); resolve(wallet); };
+        socket.on("app-wallet", handler);
+        setTimeout(() => { socket.off("app-wallet", handler); resolve(null); }, 3000);
+      });
+      if (serverBackup) {
+        const password = prompt("Enter your encryption password to recover your app wallet:");
+        if (password) {
+          try {
+            const decrypted = await decryptWithPassword(serverBackup, password);
+            const w = JSON.parse(decrypted);
+            // Re-encrypt locally with proper wallet encryption
+            const encrypted = await encryptWalletKey(w.privateKey, password, w.address);
+            localStorage.setItem("mm_app_wallet", encrypted);
+            myAppWallet = { address: w.address, privateKey: w.privateKey };
+            return myAppWallet;
+          } catch { /* wrong password */ }
+        }
+      }
+    } catch {}
+  }
+
+  // Generate new wallet
+  const wallet = ethers.Wallet.createRandom();
+  const address = wallet.address.toLowerCase();
+  const privateKey = wallet.privateKey;
+  myAppWallet = { address, privateKey };
+
+  // Store address immediately so it's registered even without password
+  localStorage.setItem("mm_app_wallet", JSON.stringify({ address }));
+
+  // Secure the wallet — reuse E2E password if already set, otherwise prompt once
+  if (!localStorage.getItem("mm_wallet_prompted")) {
+    localStorage.setItem("mm_wallet_prompted", "1");
+    setTimeout(async () => {
+      // Try to get the E2E password from the server backup (if user already set one)
+      let password = null;
+      // Check if E2E key backup exists on server — if so, user already has a password
+      // We can't retrieve it, but we can ask them to enter it once
+      const hasE2EBackup = await new Promise((resolve) => {
+        if (!socket) { resolve(false); return; }
+        socket.emit("get-e2e-backup");
+        const h = ({ e2eKey }) => { socket.off("e2e-backup", h); resolve(!!e2eKey); };
+        socket.on("e2e-backup", h);
+        setTimeout(() => { socket.off("e2e-backup", h); resolve(false); }, 2000);
+      });
+      if (hasE2EBackup) {
+        password = prompt("Enter your existing encryption password to also secure your app wallet:");
+      } else {
+        password = prompt("Create a password to secure your wallet and encrypted DMs:");
+      }
+      if (password && password.length >= 8) {
+        try {
+          const encrypted = await encryptWalletKey(privateKey, password, address);
+          localStorage.setItem("mm_app_wallet", encrypted);
+          const serverBackup = await encryptWithPassword(JSON.stringify({ address, privateKey }), password);
+          if (socket) socket.emit("backup-app-wallet", { wallet: serverBackup });
+          showToast("App wallet secured", "success");
+        } catch (e) { console.warn("Wallet encryption failed:", e); }
+      } else {
+        showToast("App wallet created — secure it later from your profile", "info", 4000);
+      }
+    }, 2000);
+  }
+
+  return myAppWallet;
+}
 
 // ── Audio ────────────────────────────────────────────────────────────────
 
@@ -2498,9 +2660,9 @@ function updateMyStats() {
   parts.push(`<div class="my-stats-item"><span id="social-score-display">${mySocialScoreBase.toLocaleString()}</span> score</div>`);
   if (myStats.totalMeets > 0) parts.push(`<div class="my-stats-item"><span>${myStats.totalMeets}</span> meets</div>`);
   if (myStats.received > 0) { const rate = pickupRate(myStats); parts.push(`<div class="my-stats-item"><span>${rate}%</span> pickup</div>`); }
-  if (myStats.streak >= 3) parts.push(`<div class="my-stats-item">🔥<span>${myStats.streak}</span></div>`);
+  if (myStats.streak >= 3) parts.push(`<div class="my-stats-item">🔥<span>${myStats.streak}</span> streak</div>`);
   if (myStats.totalOnlineMs > 60_000) parts.push(`<div class="my-stats-item"><span>${formatOnlineTime(myStats.totalOnlineMs)}</span> online</div>`);
-  el.innerHTML = parts.join('<span style="opacity:0.3">·</span>');
+  el.innerHTML = parts.join('<span style="opacity:0.2;margin:0 1px;">·</span>');
 }
 
 // ── Toast ────────────────────────────────────────────────────────────────
@@ -2837,9 +2999,9 @@ function renderChatMsg(msg, container, opts = {}) {
   el.dataset.msgId = msg.id;
   el.style.position = "relative";
   el.innerHTML = `
-    <div class="chat-msg-pfp" style="${bg}">${inner}</div>
+    <div class="chat-msg-pfp" style="${bg};cursor:pointer" onclick="showProfile('${escapeHtml(msg.name).replace(/'/g,"\\'")}')">${inner}</div>
     <div class="chat-msg-body">
-      <span class="chat-msg-name" style="color:${color}">${chatDisplayName(msg)}</span>
+      <span class="chat-msg-name" style="color:${color};cursor:pointer" onclick="showProfile('${escapeHtml(msg.name).replace(/'/g,"\\'")}')">${chatDisplayName(msg)}</span>
       <span class="chat-msg-time">${formatChatTime(msg.ts)}</span>
       <div class="chat-msg-text">${escapeHtml(msg.text)}</div>
       ${showReactions ? renderReactions(msg.id, msg.reactions) : ""}
@@ -3527,6 +3689,14 @@ window.extendCall = function() {
   socket.emit("extend-call", { callId: currentCallId, seconds: 30 });
 };
 
+window.tipCallPartner = function() {
+  if (!currentRemote) return;
+  const partner = users.find(u => u.userId === currentRemote.userId);
+  const addr = partner?.walletAddress || partner?.appWalletAddress;
+  if (!addr) { showToast("Partner has no wallet", "error"); return; }
+  tipUser(addr, currentRemote.name, "call");
+};
+
 function endCurrentCall() {
   if (currentCallId) socket.emit("end-call", { callId: currentCallId });
   cleanup();
@@ -3548,24 +3718,18 @@ function cleanup() {
 // ── Socket.IO ────────────────────────────────────────────────────────────
 
 function connectSocket() {
-  // If socket exists and is connected or reconnecting, don't create a new one
+  // If already connected, skip
+  if (socket && socket.connected) return;
+  // Clean up any existing socket
   if (socket) {
-    if (socket.connected) return;
-    // If socket.io is already trying to reconnect, let it handle it
-    if (socket.io && (socket.io.readyState === "opening" || socket.io._reconnecting)) return;
-    socket.removeAllListeners();
-    socket.disconnect();
+    try { socket.removeAllListeners(); socket.disconnect(); } catch {}
   }
   socket = io(SERVER_URL, {
     reconnection: true, reconnectionAttempts: Infinity,
     reconnectionDelay: 1000, reconnectionDelayMax: 10000,
   });
 
-  let registerPending = false;
   socket.on("connect", () => {
-    if (registerPending) return; // prevent double-register on rapid reconnects
-    registerPending = true;
-    setTimeout(() => { registerPending = false; }, 2000); // reset after 2s
     const savedUserId = localStorage.getItem("om_userId");
     const savedName = localStorage.getItem("om_name");
     const savedX = localStorage.getItem("om_xUsername") || myXUsername || null;
@@ -3609,18 +3773,20 @@ function connectSocket() {
     autoMeetEnabled = !!autoMeet;
     autoMeetCooldownHours = cooldownHours || 24;
     updateAutoMeetUI();
-    // Fetch saved contacts
-    socket.emit("get-contacts");
-    socket.emit("chat-history");
+    // Fetch all initial data in one request
+    if (socket) socket.emit("init-data");
     resetIdleTimer();
     loadStats();
-    if (socket) { socket.emit("get-social-score"); socket.emit("get-my-pairs"); }
-    loadDirectory(); // backfills contact pfps from directory
-    if (socket) socket.emit("get-notifications");
+    loadDirectory();
     // Register E2E public key for encrypted DMs
     getOrCreateE2EKeypair().then(kp => {
       if (socket && kp.publicKeyJWK) socket.emit("register-pubkey", { publicKey: kp.publicKeyJWK });
     }).catch(e => console.warn("E2E key setup failed:", e));
+    // Initialize app wallet (auto-generated for tipping)
+    // Create app wallet for all users (burner/secondary wallet)
+    getOrCreateAppWallet().then(w => {
+      if (socket && w?.address) socket.emit("register-app-wallet", { address: w.address });
+    }).catch(e => console.warn("App wallet setup failed:", e));
     // Show quick-post for verified users
     const qp = document.getElementById("quick-post");
     if (qp) qp.classList.toggle("active", !!(xUsername || walletAddress));
@@ -4080,6 +4246,42 @@ function connectSocket() {
     updateMyStats();
   });
 
+  // Bundled init response — processes contacts, chat, notifications, score, pairs, feed in one go
+  socket.on("init-data", ({ contacts, chatHistory, notifications, unreadCount, socialScore, pairs, globalFeed }) => {
+    // Contacts
+    myContacts = contacts || [];
+    renderContacts($("#search-input")?.value || "");
+    if (myContacts.length === 0 && users.filter(u => u.userId !== myUserId).length === 0) {
+      const feedTab = document.getElementById("tab-feed");
+      if (feedTab && !feedTab.classList.contains("active")) feedTab.click();
+    }
+    // Chat history
+    if (chatHistory) {
+      const container = $("#chat-messages");
+      container.innerHTML = "";
+      chatHistory.forEach(msg => renderChatMsg(msg, container));
+    }
+    // Notifications
+    updateNotifBadge(unreadCount || 0);
+    renderNotifications(notifications || []);
+    // Social score
+    if (socialScore) {
+      updateSocialScoreBase(socialScore.score);
+      startSocialScoreTicker();
+      updateMyStats();
+    }
+    // Pair meetings
+    myPairData = pairs || {};
+    renderContacts($("#search-input")?.value || "");
+    // Global feed
+    if (globalFeed) {
+      const list = document.getElementById("feed-list");
+      if (list) {
+        list.innerHTML = globalFeed.length > 0 ? globalFeed.map(p => renderPost(p)).join("") : '<div class="post-empty">No posts yet. Be the first!</div>';
+      }
+    }
+  });
+
   socket.on("my-pairs", (pairs) => {
     myPairData = pairs || {};
     renderContacts($("#search-input")?.value || "");
@@ -4154,6 +4356,25 @@ function connectSocket() {
     if (streamId !== currentStreamId) return;
     updateStreamViewerCount(viewerCount);
     renderStreamViewers(viewers);
+  });
+
+  // Stream tip event — show inline in stream chat
+  socket.on("stream-tip-event", ({ streamId, sender, amount, message }) => {
+    if (streamId !== currentStreamId) return;
+    const container = document.getElementById("stream-chat-messages");
+    const el = document.createElement("div");
+    el.className = "stream-tip-msg";
+    el.innerHTML = `<span class="tip-sender">${escapeHtml(sender)}</span> tipped <span class="tip-amount">${escapeHtml(amount)} ETH</span>${message ? `<div class="tip-message">${escapeHtml(message)}</div>` : ""}`;
+    container.appendChild(el);
+    container.scrollTop = container.scrollHeight;
+    playNotifSound();
+  });
+
+  // Call tip event — show toast during call
+  socket.on("call-tip-event", ({ callId, sender, amount, message }) => {
+    if (callId !== currentCallId) return;
+    showToast(`💰 ${sender} tipped ${amount} ETH${message ? ": " + message : ""}`, "success", 4000);
+    playNotifSound();
   });
 
   socket.on("stream-ended", ({ streamId }) => {
@@ -4306,13 +4527,30 @@ let profileIsOwn = false;
 
 function showProfile(username) {
   profileTarget = username;
-  profileIsOwn = (myName && username.toLowerCase() === myName.toLowerCase());
-  // Update URL to shareable profile link
+  const isWalletAddress = /^0x[0-9a-fA-F]{40}$/.test(username);
+  const isXHandle = username.startsWith("@") && username.length > 1;
+
+  // Resolve @handle or 0x address to a registered user if possible
+  let resolvedName = username;
+  if (isXHandle) {
+    const handle = username.slice(1).toLowerCase();
+    const found = users.find(u => u.xUsername && u.xUsername.toLowerCase() === handle);
+    if (found) resolvedName = found.name;
+  } else if (isWalletAddress) {
+    const addr = username.toLowerCase();
+    const found = users.find(u => u.walletAddress && u.walletAddress.toLowerCase() === addr);
+    if (found) resolvedName = found.name;
+  }
+
+  profileTarget = resolvedName;
+  profileIsOwn = (myName && resolvedName.toLowerCase() === myName.toLowerCase());
   window.history.pushState({ profile: username }, "", `/?profile=${encodeURIComponent(username)}`);
-  document.title = `${username} — minimeet.cc`;
+  document.title = `${resolvedName} — minimeet.cc`;
   showScreen("profile-screen");
+
   // Clear while loading
-  $("#profile-name").textContent = username;
+  const displayName = isWalletAddress ? username.slice(0, 6) + "..." + username.slice(-4) : (isXHandle ? username : resolvedName);
+  $("#profile-name").textContent = displayName;
   $("#profile-handle").textContent = "";
   $("#profile-bio").innerHTML = "";
   $("#profile-stats-row").innerHTML = "";
@@ -4321,9 +4559,8 @@ function showProfile(username) {
   $("#profile-compose").innerHTML = "";
   $("#profile-banner").style.backgroundImage = "";
   const avatarEl = $("#profile-avatar");
-  const c = getColor(username);
-  // Try to show cached avatar immediately while server loads
-  const cached = profileIsOwn ? null : getCachedMeta(username.toLowerCase());
+  const c = getColor(resolvedName);
+  const cached = profileIsOwn ? null : getCachedMeta(resolvedName.toLowerCase());
   const ownAvatar = profileIsOwn ? myAvatar : null;
   const quickAvatar = ownAvatar || cached?.avatar || null;
   if (quickAvatar) {
@@ -4331,12 +4568,40 @@ function showProfile(username) {
     avatarEl.innerHTML = "";
   } else {
     avatarEl.style.background = c;
-    avatarEl.innerHTML = `<span style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:#fff">${getInitials(username)}</span>`;
+    avatarEl.innerHTML = `<span style="font-family:var(--font-mono);font-size:18px;font-weight:700;color:#fff">${getInitials(displayName)}</span>`;
   }
 
   if (socket) {
-    socket.emit("get-profile", { username });
-    socket.emit("get-user-posts", { username, limit: 20, offset: 0 });
+    socket.emit("get-profile", { username: resolvedName });
+    socket.emit("get-user-posts", { username: resolvedName, limit: 20, offset: 0 });
+  }
+
+  // For unregistered 0x addresses or @handles, show minimal profile if server returns nothing
+  if (isWalletAddress || isXHandle) {
+    setTimeout(() => {
+      // If profile data hasn't loaded (no name update), show minimal actions
+      if ($("#profile-actions").innerHTML === "") {
+        let actionsHtml = "";
+        if (isWalletAddress) {
+          actionsHtml += `<button class="profile-action-btn" onclick="tipUser('${escapeHtml(username.toLowerCase())}','${escapeHtml(displayName).replace(/'/g,"\\'")}')">Tip ETH</button>`;
+          actionsHtml += `<button class="profile-action-btn" onclick="openDM(null,'${escapeHtml(username.toLowerCase()).replace(/'/g,"\\'")}',null)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> Message</button>`;
+          $("#profile-handle").innerHTML = `<a href="https://etherscan.io/address/${escapeHtml(username)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(username.slice(0,10))}...${escapeHtml(username.slice(-8))}</a>`;
+          $("#profile-posts-list").innerHTML = '<div class="post-empty">This address hasn\'t signed up yet</div>';
+        } else if (isXHandle) {
+          // Try to get X wallet address
+          fetch(`/api/x-wallet/${encodeURIComponent(username.slice(1))}`).then(r => r.ok ? r.json() : null).then(data => {
+            if (data?.address) {
+              actionsHtml = `<button class="profile-action-btn" onclick="tipUser('${escapeHtml(data.address)}','${escapeHtml(username).replace(/'/g,"\\'")}')">Tip ETH</button>` + actionsHtml;
+              $("#profile-actions").innerHTML = actionsHtml;
+            }
+          }).catch(() => {});
+          actionsHtml += `<button class="profile-action-btn" onclick="openDM(null,'${escapeHtml(username).replace(/'/g,"\\'")}',null)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> Message</button>`;
+          $("#profile-handle").innerHTML = `<a href="https://x.com/${escapeHtml(username.slice(1))}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(username)}</a>`;
+          $("#profile-posts-list").innerHTML = '<div class="post-empty">This user hasn\'t signed up yet</div>';
+        }
+        $("#profile-actions").innerHTML = actionsHtml;
+      }
+    }, 2000);
   }
 }
 
@@ -4366,7 +4631,12 @@ function handleProfileData(data) {
   $("#profile-name").textContent = data.displayName || data.username;
   let handleHtml = "";
   if (data.xUsername) handleHtml += `<a href="https://x.com/${escapeHtml(data.xUsername)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">@${escapeHtml(data.xUsername)}</a>`;
-  if (data.walletAddress) handleHtml += (handleHtml ? " · " : "") + `<a href="https://etherscan.io/address/${escapeHtml(data.walletAddress)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(data.walletAddress.slice(0,6))}...${escapeHtml(data.walletAddress.slice(-4))}</a>`;
+  // Show wallet address: external wallet takes priority, then app wallet
+  const profileWallet = data.walletAddress || data.appWalletAddress;
+  if (profileWallet) {
+    const label = data.walletAddress ? "" : "app ";
+    handleHtml += (handleHtml ? " · " : "") + `<a href="https://etherscan.io/address/${escapeHtml(profileWallet)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;" title="${label}wallet">${escapeHtml(profileWallet.slice(0,6))}...${escapeHtml(profileWallet.slice(-4))}</a>`;
+  }
   // Add online/offline status
   if (!profileIsOwn) {
     const online = users.find(u => u.name.toLowerCase() === (data.username || "").toLowerCase());
@@ -4417,25 +4687,36 @@ function handleProfileData(data) {
   let actionsHtml = "";
   if (profileIsOwn) {
     // Bio/banner editing handled inline (click bio text or pencil icon on banner)
-    actionsHtml += `<button class="link-btn" onclick="copyProfileLink('${escapeHtml(myName).replace(/'/g,"\\'")}')"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg> share</button>`;
+    const myTipAddr = myWalletAddress || (myAppWallet ? myAppWallet.address : null);
+    if (myTipAddr) {
+      actionsHtml += `<button class="profile-action-btn" onclick="tipUser('${escapeHtml(myTipAddr)}','${escapeHtml(myName).replace(/'/g,"\\'")}')">Deposit ETH</button>`;
+    }
+    actionsHtml += `<button style="background:none;border:none;color:#555;cursor:pointer;padding:4px;transition:color 0.15s;" onclick="copyProfileLink('${escapeHtml(myName).replace(/'/g,"\\'")}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></button>`;
     // Key export for guests (no X or wallet to recover from)
     if (!myXUsername && !myWalletAddress) {
       actionsHtml += `<button class="profile-action-btn" onclick="exportE2EKey()">Export Key</button>`;
       actionsHtml += `<button class="profile-action-btn" onclick="importE2EKey()">Import Key</button>`;
     }
+    // Post export + integrity hash
+    actionsHtml += `<button style="background:none;border:none;color:#555;cursor:pointer;padding:4px;transition:color 0.15s;" onclick="exportMyPosts()" title="Export posts &amp; post integrity hash onchain"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>`;
   } else {
     const online = users.find(u => u.name.toLowerCase() === data.username.toLowerCase());
     // Message button always visible and prominent
-    actionsHtml += `<button class="profile-action-btn primary" onclick="openDM(${online?"'"+online.userId+"'":"null"},'${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}',${data.avatar?"'"+data.avatar.replace(/'/g,"\\'")+"'":"null"})">Message</button>`;
+    // DM icon button
+    actionsHtml += `<button class="profile-action-btn primary" onclick="openDM(${online?"'"+online.userId+"'":"null"},'${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}',${data.avatar?"'"+data.avatar.replace(/'/g,"\\'")+"'":"null"})" title="Message"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> Message</button>`;
+    // Call icon button
     if (online) {
-      actionsHtml += `<button class="profile-action-btn primary" onclick="callUser('${online.userId}','${escapeHtml(online.name).replace(/'/g,"\\'")}',${online.avatar?"'"+online.avatar.replace(/'/g,"\\'")+"'":"null"})">Call</button>`;
+      actionsHtml += `<button class="profile-action-btn primary" onclick="callUser('${online.userId}','${escapeHtml(online.name).replace(/'/g,"\\'")}',${online.avatar?"'"+online.avatar.replace(/'/g,"\\'")+"'":"null"})" title="Call"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg> Call</button>`;
     } else {
-      actionsHtml += `<button class="profile-action-btn" onclick="callBackUser('${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')">Request Call</button>`;
+      actionsHtml += `<button class="profile-action-btn" onclick="callBackUser('${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.362 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg> Request</button>`;
     }
-    if (data.walletAddress) {
-      actionsHtml += `<button class="profile-action-btn" onclick="tipUser('${escapeHtml(data.walletAddress)}','${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')">Tip ETH</button>`;
+    // Tip button
+    const tipAddr = data.walletAddress || data.appWalletAddress;
+    if (tipAddr) {
+      actionsHtml += `<button class="profile-action-btn" onclick="tipUser('${escapeHtml(tipAddr)}','${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')">Tip ETH</button>`;
     }
-    actionsHtml += `<button class="link-btn" onclick="copyProfileLink('${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg> share</button>`;
+    // Share icon (no border)
+    actionsHtml += `<button style="background:none;border:none;color:#555;cursor:pointer;padding:4px;transition:color 0.15s;" onclick="copyProfileLink('${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></button>`;
   }
   $("#profile-actions").innerHTML = actionsHtml;
 
@@ -4797,17 +5078,20 @@ window.callBackUser = function(name) {
 
 let tipTargetAddress = null;
 let tipTargetName = null;
+let tipContext = null; // "profile" | "stream" | "call"
 
-window.tipUser = function(walletAddress, displayName) {
+window.tipUser = function(walletAddress, displayName, context) {
   if (!window._signer) {
     showToast("Connect your wallet first to send a tip", "error");
     return;
   }
   tipTargetAddress = walletAddress;
   tipTargetName = displayName;
+  tipContext = context || "profile";
   document.getElementById("tip-recipient-name").textContent = displayName;
   document.getElementById("tip-recipient-addr").textContent = walletAddress.slice(0, 6) + "..." + walletAddress.slice(-4);
-  document.getElementById("tip-amount").value = "";
+  document.getElementById("tip-amount").value = "0.001";
+  document.getElementById("tip-message").value = "";
   document.getElementById("tip-overlay").classList.add("active");
   document.getElementById("tip-amount").focus();
 };
@@ -4823,21 +5107,135 @@ window.confirmTip = async function() {
     showToast("Enter a valid amount", "error");
     return;
   }
+  // Validate decimal precision (ETH has 18 decimals max)
+  const parts = amount.split(".");
+  if (parts[1] && parts[1].length > 18) {
+    showToast("Too many decimal places (max 18)", "error");
+    return;
+  }
   if (!tipTargetAddress || !window._signer) return;
+  if (!/^0x[0-9a-fA-F]{40}$/.test(tipTargetAddress)) {
+    showToast("Invalid recipient address", "error");
+    return;
+  }
+  // Capture values before closing overlay (closeTipOverlay nullifies them)
+  const addr = tipTargetAddress;
+  const name = tipTargetName;
+  const ctx = tipContext;
+  const tipMsg = document.getElementById("tip-message").value.trim();
   closeTipOverlay();
   try {
     showToast("Confirm in your wallet...", "info", 5000);
     const tx = await window._signer.sendTransaction({
-      to: tipTargetAddress,
+      to: addr,
       value: ethers.parseEther(amount),
     });
     showToast(`Tip sent! TX: ${tx.hash.slice(0, 10)}...`, "success", 5000);
-    if (socket) socket.emit("tip-sent", { toName: tipTargetName, amount, txHash: tx.hash });
+    if (socket) {
+      if (ctx === "stream" && currentStreamId) {
+        socket.emit("stream-tip", { streamId: currentStreamId, amount, txHash: tx.hash, message: tipMsg });
+      } else if (ctx === "call" && currentCallId) {
+        socket.emit("call-tip", { callId: currentCallId, amount, txHash: tx.hash, message: tipMsg });
+      } else {
+        socket.emit("tip-sent", { toName: name, amount, txHash: tx.hash });
+      }
+    }
   } catch (e) {
     if (e.code === "ACTION_REJECTED" || e.code === 4001) {
       showToast("Tip cancelled", "info");
     } else {
       showToast("Tip failed: " + (e.reason || e.message || "unknown error"), "error");
+    }
+  }
+};
+
+// ── Post export + integrity hash via Poster (EIP-3722) ──────────────────
+
+const POSTER_ADDRESS = "0x000000000000cd17345801aa8147b8D3950260FF";
+const POSTER_ABI = ["function post(string content, string tag) public"];
+
+window.exportMyPosts = async function() {
+  if (!socket || !myName) { showToast("Not logged in", "error"); return; }
+
+  // Fetch all posts from server
+  showToast("Fetching posts...", "info", 2000);
+  const posts = await new Promise((resolve) => {
+    socket.emit("get-user-posts", { username: myName, limit: 1000, offset: 0 });
+    const handler = ({ username, posts }) => {
+      if (username.toLowerCase() === myName.toLowerCase()) {
+        socket.off("user-posts", handler);
+        resolve(posts);
+      }
+    };
+    socket.on("user-posts", handler);
+    setTimeout(() => { socket.off("user-posts", handler); resolve([]); }, 5000);
+  });
+
+  if (posts.length === 0) { showToast("No posts to export", "info"); return; }
+
+  // Build export data — clean, compact JSON
+  const exportData = {
+    version: 1,
+    platform: "minimeet.cc",
+    author: myName,
+    xUsername: myXUsername || null,
+    walletAddress: myWalletAddress || null,
+    exportedAt: new Date().toISOString(),
+    postCount: posts.length,
+    posts: posts
+      .sort((a, b) => a.createdAt - b.createdAt) // deterministic order
+      .map(p => ({
+        id: p.id,
+        text: p.text || "",
+        image: p.image || null,
+        likeCount: p.likeCount || 0,
+        replyCount: p.replyCount || 0,
+        createdAt: new Date(p.createdAt).toISOString(),
+      })),
+  };
+
+  // Use compact JSON for deterministic hashing (no whitespace variance)
+  const jsonStr = JSON.stringify(exportData);
+
+  // Compute SHA-256 integrity hash over the exact JSON bytes
+  const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(jsonStr));
+  const hashHex = "0x" + Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+
+  // Download the file (compact — same bytes that were hashed)
+  const blob = new Blob([jsonStr], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `minimeet-posts-${myName}-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+
+  showToast(`Exported ${posts.length} posts. Hash: ${hashHex.slice(0, 10)}...`, "success", 4000);
+
+  // Offer to post integrity hash onchain via Poster contract
+  if (window._signer || window._connectedAddress) {
+    const doPost = confirm(`Post integrity hash onchain via Poster contract?\n\nHash: ${hashHex}\nPosts: ${posts.length}\n\nThis creates a permanent, verifiable record on Ethereum.`);
+    if (doPost) {
+      try {
+        if (!window._signer) { showToast("Connect wallet first", "error"); return; }
+        const poster = new ethers.Contract(POSTER_ADDRESS, POSTER_ABI, window._signer);
+        const content = JSON.stringify({
+          type: "integrity-hash",
+          platform: "minimeet.cc",
+          author: myName,
+          hash: hashHex,
+          postCount: posts.length,
+          exportedAt: exportData.exportedAt,
+        });
+        showToast("Confirm in your wallet...", "info", 5000);
+        const tx = await poster.post(content, "minimeet.cc");
+        showToast(`Hash posted onchain! TX: ${tx.hash.slice(0, 10)}...`, "success", 5000);
+      } catch (e) {
+        if (e.code === "ACTION_REJECTED" || e.code === 4001) {
+          showToast("Cancelled", "info");
+        } else {
+          showToast("Failed: " + (e.reason || e.message || "error"), "error");
+        }
+      }
     }
   }
 };
@@ -5124,6 +5522,22 @@ $("#dm-send").addEventListener("click", sendDM);
 $("#dm-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendDM(); });
 $("#dm-overlay").addEventListener("click", (e) => { if (e.target === $("#dm-overlay")) closeDM(); });
 // DM image upload
+// DM emoji bar
+const DM_EMOJIS = ["😊", "😂", "❤️", "🔥", "👍", "👎", "😭", "🙏", "👀", "💯", "🎉", "😍", "🤔", "😅", "✨", "💀"];
+const emojiBar = document.getElementById("dm-emoji-bar");
+emojiBar.innerHTML = DM_EMOJIS.map(e => `<button onclick="insertDMEmoji('${e}')">${e}</button>`).join("");
+
+window.insertDMEmoji = function(emoji) {
+  const input = document.getElementById("dm-input");
+  const pos = input.selectionStart || input.value.length;
+  input.value = input.value.slice(0, pos) + emoji + input.value.slice(pos);
+  input.focus();
+};
+
+$("#dm-emoji-toggle").addEventListener("click", () => {
+  emojiBar.classList.toggle("active");
+});
+
 $("#dm-img-btn").addEventListener("click", () => { $("#dm-file-input").click(); });
 $("#dm-file-input").addEventListener("change", async (e) => {
   const file = e.target.files[0]; if (!file) return;
@@ -5159,11 +5573,28 @@ $("#chat-toggle").addEventListener("click", () => {
 
 // Chat send
 $("#chat-send").addEventListener("click", sendPublicChat);
-$("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendPublicChat(); });
+$("#chat-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPublicChat(); }
+});
+// Auto-resize chat textarea
+$("#chat-input").addEventListener("input", function() {
+  this.style.height = "auto";
+  this.style.height = Math.min(this.scrollHeight, 60) + "px";
+});
 
 // Stream chat send
 $("#stream-chat-send").addEventListener("click", sendStreamChat);
 $("#stream-chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendStreamChat(); });
+// Stream tip button
+$("#stream-tip-btn").addEventListener("click", () => {
+  if (!currentStreamId) return;
+  // Get streamer's wallet address — match the current stream
+  const streamer = users.find(u => u.streaming && u.streaming.streamId === currentStreamId);
+  if (!streamer) { showToast("Streamer not found", "error"); return; }
+  const addr = streamer.walletAddress || streamer.appWalletAddress;
+  if (!addr) { showToast("Streamer has no wallet", "error"); return; }
+  tipUser(addr, streamer.name, "stream");
+});
 
 // Go Live
 $("#go-live-btn").addEventListener("click", () => startStream());
@@ -5203,7 +5634,9 @@ $("#sign-out-link").addEventListener("click", (e) => {
   // Disconnect socket
   if (socket) socket.disconnect();
   // Reset state
-  myUserId = null; myName = ""; myAvatar = null; myStats = null; myXUsername = null; myWalletAddress = null; myCustomStatus = null; myContacts = [];
+  myUserId = null; myName = ""; myAvatar = null; myStats = null; myXUsername = null; myWalletAddress = null; myCustomStatus = null; myContacts = []; myAppWallet = null;
+  localStorage.removeItem("mm_app_wallet");
+  localStorage.removeItem("mm_wallet_prompted");
   // Back to login
   showScreen("login-screen");
   showToast("Signed out", "success");
@@ -5376,6 +5809,12 @@ window.addEventListener("load", async () => {
           showToast(`Signed in as @${profile.username}`, "success");
         }
 
+        // Store derived app wallet address if provided
+        if (profile.appWalletAddress) {
+          localStorage.setItem("mm_app_wallet", JSON.stringify({ address: profile.appWalletAddress }));
+          myAppWallet = { address: profile.appWalletAddress, privateKey: null };
+        }
+
         connectSocket();
         return;
       } else {
@@ -5395,31 +5834,28 @@ window.addEventListener("load", async () => {
   // ── Normal reconnect ────────────────────────────────────────────────
   const savedUserId = localStorage.getItem("om_userId");
   const savedName = localStorage.getItem("om_name");
-  const savedX = localStorage.getItem("om_xUsername");
-  if (savedX) myXUsername = savedX;
-  const savedWalletAddr = localStorage.getItem("om_walletAddress");
-  if (savedWalletAddr) myWalletAddress = savedWalletAddr;
+  if (localStorage.getItem("om_xUsername")) myXUsername = localStorage.getItem("om_xUsername");
+  if (localStorage.getItem("om_walletAddress")) myWalletAddress = localStorage.getItem("om_walletAddress");
 
   if (savedUserId && savedName) {
     myName = savedName;
-    // Show login screen with a reconnecting state (not blank)
-    showScreen("login-screen");
-    $("#join-btn").disabled = true;
-    $("#name-input").value = savedName;
-    $("#name-input").disabled = true;
-    $("#login-error").textContent = "";
-    // Show subtle reconnecting indicator
-    const loginLogo = document.querySelector(".login-subtitle");
-    const origSubtitle = loginLogo ? loginLogo.textContent : "";
-    if (loginLogo) loginLogo.textContent = "Reconnecting...";
+
+    // Render cached UI immediately
+    let nameHtml = escapeHtml(savedName);
+    if (myXUsername) nameHtml += ` <span class="x-handle">@${escapeHtml(myXUsername)}</span>`;
+    if (myWalletAddress) nameHtml += ` <a class="wallet-handle" href="https://etherscan.io/address/${escapeHtml(myWalletAddress)}" target="_blank" rel="noopener" style="text-decoration:none;color:#888;">${escapeHtml(myWalletAddress.slice(0,6))}...${escapeHtml(myWalletAddress.slice(-4))}</a>`;
+    $("#my-name-display").innerHTML = nameHtml;
+    updateMyPfp();
+    showScreen("contacts-screen");
+
+    // Connect socket in background
     connectSocket();
-    // If reconnect fails after 15s, restore login form
+    // If reconnect fails after 15s, fall back to login
     setTimeout(() => {
       if (!myUserId) {
-        if (loginLogo) loginLogo.textContent = origSubtitle;
-        $("#name-input").disabled = false;
-        $("#join-btn").disabled = false;
         showScreen("login-screen");
+        $("#name-input").value = savedName;
+        showToast("Session expired — please sign in again", "info");
       }
     }, 15000);
   }

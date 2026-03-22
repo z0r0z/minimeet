@@ -5,7 +5,7 @@ const { v4: uuidv4 } = require("uuid");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { verifyMessage } = require("ethers");
+const { verifyMessage, Wallet: EthersWallet } = require("ethers");
 
 const app = express();
 const server = http.createServer(app);
@@ -39,6 +39,12 @@ if (SUPABASE_URL && SUPABASE_KEY) {
 
 const X_CLIENT_ID = process.env.X_CLIENT_ID;
 const X_CLIENT_SECRET = process.env.X_CLIENT_SECRET;
+const WALLET_DERIVATION_SECRET = (() => {
+  if (process.env.WALLET_DERIVATION_SECRET) return process.env.WALLET_DERIVATION_SECRET;
+  if (process.env.NODE_ENV === "production") throw new Error("WALLET_DERIVATION_SECRET is required in production");
+  console.warn("⚠️  WALLET_DERIVATION_SECRET not set — X user wallets will change on restart!");
+  return crypto.randomBytes(32).toString("hex");
+})();
 const X_CALLBACK_URL = process.env.X_CALLBACK_URL || "http://localhost:3001/auth/x/callback";
 
 const oauthStates = new Map();  // state → { codeVerifier, createdAt }
@@ -152,6 +158,15 @@ app.get("/auth/x/callback", async (req, res) => {
     // Also store avatar in the avatars table so dbGetAvatar finds it
     if (avatar) await dbSetAvatar(xUser.name, avatar);
 
+    // Derive deterministic app wallet from X ID
+    const derivedWallet = deriveWalletFromXId(xUser.id);
+    // Store the derived wallet address in the profile
+    const profile = await dbGetProfile(xUser.name.toLowerCase());
+    if (!profile.appWalletAddress) {
+      profile.appWalletAddress = derivedWallet.address;
+      await dbSetProfile(xUser.name.toLowerCase(), profile);
+    }
+
     // Create a temporary auth token the client can use
     const authToken = base64url(crypto.randomBytes(24));
     authTokens.set(authToken, {
@@ -159,7 +174,8 @@ app.get("/auth/x/callback", async (req, res) => {
       username: xUser.username,
       displayName: xUser.name,
       avatar,
-      expiresAt: Date.now() + 300_000, // 5 min to use it
+      appWalletAddress: derivedWallet.address,
+      expiresAt: Date.now() + 300_000,
     });
 
     console.log(`✅ X auth success: @${xUser.username} (${xUser.name})`);
@@ -180,6 +196,7 @@ app.get("/auth/resolve/:token", (req, res) => {
     username: profile.username,
     displayName: profile.displayName,
     avatar: profile.avatar,
+    appWalletAddress: profile.appWalletAddress || null,
   });
 });
 
@@ -204,6 +221,30 @@ app.get("/api/turn-credentials", (req, res) => {
   });
 });
 
+// ─── Deterministic wallet derivation from X ID ──────────────────────────────
+
+function deriveWalletFromXId(xId) {
+  // HMAC-SHA256(server_secret, "minimeet-wallet:" + xId) → 32 bytes → derive address only
+  const privateKeyBytes = crypto.createHmac("sha256", WALLET_DERIVATION_SECRET)
+    .update("minimeet-wallet:" + xId).digest();
+  const wallet = new EthersWallet("0x" + privateKeyBytes.toString("hex"));
+  return { address: wallet.address.toLowerCase() };
+}
+
+// Endpoint: get the deterministic address for any X username (no auth needed — address is public)
+app.get("/api/x-wallet/:username", async (req, res) => {
+  const username = (req.params.username || "").toLowerCase().trim();
+  if (!username) return res.status(400).json({ error: "Username required" });
+  // Look up X ID from x_profiles
+  const xProfile = await dbGetXProfile(username);
+  if (xProfile?.xId || xProfile?.x_id) {
+    const xId = xProfile.xId || xProfile.x_id;
+    const { address } = deriveWalletFromXId(xId);
+    return res.json({ username, address });
+  }
+  res.status(404).json({ error: "X user not found — they need to sign in first" });
+});
+
 // ─── Wallet signature verification ───────────────────────────────────────────
 
 const walletNonces = new Map(); // address → { nonce, createdAt }
@@ -214,7 +255,18 @@ setInterval(() => {
   for (const [k, v] of walletNonces) { if (now - v.createdAt > 300_000) walletNonces.delete(k); }
 }, 300_000);
 
+const nonceRateLimit = new Map(); // IP → { count, resetAt }
 app.get("/auth/wallet/nonce", (req, res) => {
+  // Rate limit: max 10 nonce requests per IP per minute
+  const ip = req.ip || req.connection.remoteAddress;
+  const rl = nonceRateLimit.get(ip) || { count: 0, resetAt: Date.now() + 60000 };
+  if (Date.now() > rl.resetAt) { rl.count = 0; rl.resetAt = Date.now() + 60000; }
+  rl.count++;
+  nonceRateLimit.set(ip, rl);
+  if (rl.count > 10) return res.status(429).json({ error: "Too many requests" });
+  // Cap nonce map size to prevent memory exhaustion
+  if (walletNonces.size > 10000) walletNonces.clear();
+
   const address = (req.query.address || "").toLowerCase().trim();
   if (!/^0x[0-9a-f]{40}$/.test(address)) return res.status(400).json({ error: "Invalid address" });
   const nonce = base64url(crypto.randomBytes(16));
@@ -552,12 +604,13 @@ async function dbGetProfile(name) {
   if (supabase) {
     try {
       const { data } = await supabase.from("user_profiles").select("*").eq("name", key).single();
-      if (data) { const p = { bio: data.bio || null, banner: data.banner || null, customStatus: data.custom_status || null, e2eKey: data.e2e_key || null }; profileCache.set(key, p); return p; }
+      if (data) { const p = { bio: data.bio || null, banner: data.banner || null, customStatus: data.custom_status || null, e2eKey: data.e2e_key || null, appWallet: data.app_wallet || null, appWalletAddress: data.app_wallet_address || null }; profileCache.set(key, p); return p; }
     } catch {}
-    return { bio: null, banner: null, customStatus: null, e2eKey: null };
+    return { bio: null, banner: null, customStatus: null, e2eKey: null, appWallet: null, appWalletAddress: null };
   }
   const stored = jsonGet("user_profiles", key);
-  let p; try { p = stored ? JSON.parse(stored) : { bio: null, banner: null, customStatus: null, e2eKey: null }; } catch { p = { bio: null, banner: null, customStatus: null, e2eKey: null }; }
+  const defaultProfile = { bio: null, banner: null, customStatus: null, e2eKey: null, appWallet: null, appWalletAddress: null };
+  let p; try { p = stored ? { ...defaultProfile, ...JSON.parse(stored) } : { ...defaultProfile }; } catch { p = { ...defaultProfile }; }
   profileCache.set(key, p);
   return p;
 }
@@ -568,6 +621,8 @@ async function dbSetProfile(name, profile) {
   if (supabase) {
     try {
       const row = { name: key, bio: profile.bio, banner: profile.banner, custom_status: profile.customStatus || null, updated_at: new Date().toISOString() };
+      if (profile.appWallet !== undefined) row.app_wallet = profile.appWallet;
+      if (profile.appWalletAddress !== undefined) row.app_wallet_address = profile.appWalletAddress;
       if (profile.e2eKey !== undefined) row.e2e_key = profile.e2eKey;
       await supabase.from("user_profiles").upsert(row);
     } catch (e) { console.warn("Profile write error:", e.message); }
@@ -1286,7 +1341,7 @@ function broadcastUserList() {
       users.push({
         userId, name: data.name, status: data.status,
         avatar: data.avatar || null, stats: data.stats || null,
-        xUsername: data.xUsername || null, walletAddress: data.walletAddress || null,
+        xUsername: data.xUsername || null, walletAddress: data.walletAddress || null, appWalletAddress: data.appWalletAddress || null,
         customStatus: data.customStatus || null, publicKey: data.publicKey || null,
         autoMeet: data.autoMeet || false,
         streaming, inCallWith,
@@ -1325,6 +1380,35 @@ function isNameTaken(name, excludeUserId = null) {
   if (excludeUserId && existingUserId === excludeUserId) return false;
   if (!onlineUsers.has(existingUserId)) { takenNames.delete(lower); return false; }
   return true;
+}
+
+// Check if a name is permanently claimed by a verified user (survives server restart)
+async function isNameClaimed(name, requestingXUsername, requestingWallet) {
+  const lower = name.toLowerCase().trim();
+  // Check directory for a verified user with this name
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("user_directory").select("x_username, wallet_address").eq("name", lower).single();
+      if (data && (data.x_username || data.wallet_address)) {
+        // Name belongs to a verified user — only they can use it
+        if (data.x_username && requestingXUsername && data.x_username.toLowerCase() === requestingXUsername.toLowerCase()) return false; // same X user
+        if (data.wallet_address && requestingWallet && data.wallet_address.toLowerCase() === requestingWallet.toLowerCase()) return false; // same wallet
+        return true; // different person trying to take a verified name
+      }
+    } catch {}
+  } else {
+    const stored = jsonGet("user_directory", "_all");
+    try {
+      const dir = stored ? JSON.parse(stored) : {};
+      const entry = dir[lower];
+      if (entry && (entry.xUsername || entry.walletAddress)) {
+        if (entry.xUsername && requestingXUsername && entry.xUsername.toLowerCase() === requestingXUsername.toLowerCase()) return false;
+        if (entry.walletAddress && requestingWallet && entry.walletAddress.toLowerCase() === requestingWallet.toLowerCase()) return false;
+        return true;
+      }
+    } catch {}
+  }
+  return false; // not claimed by anyone verified
 }
 
 function isUserInCall(userId) {
@@ -1463,6 +1547,12 @@ io.on("connection", (socket) => {
         socket.emit("register-error", { message: `"${trimmedName}" is already taken. Try a different name.` });
         return;
       }
+    }
+
+    // Check if name is permanently claimed by a verified user (survives server restart)
+    if (await isNameClaimed(trimmedName, xUsername, safeWallet)) {
+      socket.emit("register-error", { message: `"${trimmedName}" belongs to a verified account. Sign in with the original method.` });
+      return;
     }
 
     // Wallet-authenticated: verify wallet ownership
@@ -1963,7 +2053,27 @@ io.on("connection", (socket) => {
 
   socket.on("get-profile", async ({ username }) => {
     if (!username || typeof username !== "string") return;
-    const key = username.toLowerCase().trim();
+    let key = username.toLowerCase().trim();
+
+    // Resolve @handle to registered name
+    if (key.startsWith("@") && key.length > 1) {
+      const handle = key.slice(1);
+      for (const [, d] of onlineUsers) {
+        if (d.xUsername && d.xUsername.toLowerCase() === handle) { key = d.name.toLowerCase(); break; }
+      }
+      // If still @handle, check x_profiles
+      if (key.startsWith("@")) {
+        const xp = await dbGetXProfile(key.slice(1));
+        if (xp?.display_name) key = xp.display_name.toLowerCase().trim();
+        else if (xp?.displayName) key = xp.displayName.toLowerCase().trim();
+      }
+    }
+
+    // Resolve 0x address to registered name
+    if (/^0x[0-9a-f]{40}$/.test(key)) {
+      const owner = await dbGetWalletOwner(key);
+      if (owner) key = owner;
+    }
     const profile = await dbGetProfile(key);
     const stats = await dbGetStats(key);
     let avatar = await dbGetAvatar(key);
@@ -2023,7 +2133,7 @@ io.on("connection", (socket) => {
     if (viewerData && viewerData.name.toLowerCase() !== key) {
       pairInfo = await dbGetPairMeetings(viewerData.name, key);
     }
-    socket.emit("profile", { username: key, displayName, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, stats, postCount, customStatus: profile.customStatus || null, socialScore, pairInfo });
+    socket.emit("profile", { username: key, displayName, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, appWalletAddress: profile.appWalletAddress || null, stats, postCount, customStatus: profile.customStatus || null, socialScore, pairInfo });
   });
 
   socket.on("update-profile", async ({ bio, banner }) => {
@@ -2072,6 +2182,63 @@ io.on("connection", (socket) => {
     socket.emit("my-pairs", pairs);
   });
 
+  // Bundled init — returns contacts, chat history, notifications, social score, pairs, feed in one response
+  socket.on("init-data", async () => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const key = userData.name.toLowerCase().trim();
+    const [contacts, notifications, unreadCount, socialScore, feed] = await Promise.all([
+      dbGetContacts(key),
+      dbGetNotifications(key),
+      dbGetUnreadCount(key),
+      dbGetSocialScore(key),
+      (async () => {
+        const posts = await dbGetGlobalFeed(30);
+        const myNameLower = key;
+        for (const post of posts) {
+          const likers = await dbGetPostLikes(post.id);
+          post.likers = likers;
+          post.liked = myNameLower ? likers.includes(myNameLower) : false;
+          post.authorAvatar = await dbGetAvatar(post.author) || null;
+          post.authorName = post.author;
+        }
+        return posts;
+      })(),
+    ]);
+    // Pair meetings
+    const pairs = {};
+    const safeKey = key.replace(/[%_\\]/g, "");
+    if (supabase) {
+      try {
+        const { data } = await supabase.from("pair_meetings").select("pair, meet_count, credit_seconds").like("pair", `%${safeKey}%`);
+        if (data) for (const r of data) {
+          const parts = r.pair.split(":");
+          const peer = parts.find(p => p !== key) || parts[0];
+          pairs[peer] = { meetCount: r.meet_count || 0, creditSeconds: r.credit_seconds || 0 };
+        }
+      } catch {}
+    } else {
+      const store = jsonStores["pair_meetings"] || {};
+      for (const [pair, val] of Object.entries(store)) {
+        if (!pair.includes(key)) continue;
+        try {
+          const pm = JSON.parse(val);
+          const parts = pair.split(":");
+          const peer = parts.find(p => p !== key) || parts[0];
+          pairs[peer] = { meetCount: pm.meetCount || 0, creditSeconds: pm.creditSeconds || 0 };
+        } catch {}
+      }
+    }
+    socket.emit("init-data", {
+      contacts,
+      chatHistory: publicChat.slice(-50),
+      notifications, unreadCount,
+      socialScore,
+      pairs,
+      globalFeed: feed,
+    });
+  });
+
   socket.on("get-notifications", async () => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
@@ -2116,6 +2283,36 @@ io.on("connection", (socket) => {
     socket.emit("e2e-backup", { e2eKey: profile.e2eKey || null });
   });
 
+  // App wallet backup/restore
+  socket.on("backup-app-wallet", async ({ wallet }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (!wallet || typeof wallet !== "string" || wallet.length > 5000) return;
+    const profile = await dbGetProfile(userData.name);
+    profile.appWallet = wallet;
+    await dbSetProfile(userData.name, profile);
+  });
+
+  socket.on("get-app-wallet", async () => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const profile = await dbGetProfile(userData.name);
+    socket.emit("app-wallet", { wallet: profile.appWallet || null });
+  });
+
+  // Register app wallet address (so others can tip)
+  socket.on("register-app-wallet", async ({ address }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) return;
+    userData.appWalletAddress = address.toLowerCase();
+    // Store in directory for discoverability
+    const profile = await dbGetProfile(userData.name);
+    profile.appWalletAddress = address.toLowerCase();
+    await dbSetProfile(userData.name, profile);
+    broadcastUserList();
+  });
+
   socket.on("get-pubkey", async ({ peerName }) => {
     if (!peerName) return;
     const key = peerName.toLowerCase().trim();
@@ -2154,6 +2351,48 @@ io.on("connection", (socket) => {
     emitNotification(toName, notif);
   });
 
+  // Stream/call tip — broadcast to all participants
+  socket.on("stream-tip", async ({ streamId, amount, txHash, message }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (!streamId || !amount || !txHash) return;
+    const stream = activeStreams.get(streamId); if (!stream) return;
+    const tipMsg = { type: "tip", sender: userData.name, avatar: userData.avatar || null, amount, message: (message || "").slice(0, 100), txHash };
+    // Broadcast to streamer + all viewers
+    const ss = getSocketByUserId(stream.streamerId);
+    if (ss) ss.emit("stream-tip-event", { streamId, ...tipMsg });
+    for (const vid of stream.viewers) {
+      const vs = getSocketByUserId(vid);
+      if (vs) vs.emit("stream-tip-event", { streamId, ...tipMsg });
+    }
+    // Also create notification for streamer
+    const streamerData = onlineUsers.get(stream.streamerId);
+    if (streamerData) {
+      const notif = await dbCreateNotification(streamerData.name, "tip", userData.name, null, `${amount} ETH`);
+      emitNotification(streamerData.name, notif);
+    }
+  });
+
+  // Call tip — notify the other participant
+  socket.on("call-tip", async ({ callId, amount, txHash, message }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (!callId || !amount || !txHash) return;
+    const call = activeCalls.get(callId); if (!call) return;
+    const otherId = call.callerId === userId ? call.calleeId : call.callerId;
+    const otherData = onlineUsers.get(otherId);
+    const tipMsg = { type: "tip", sender: userData.name, avatar: userData.avatar || null, amount, message: (message || "").slice(0, 100) };
+    const os = getSocketByUserId(otherId);
+    if (os) os.emit("call-tip-event", { callId, ...tipMsg });
+    // Echo to sender
+    socket.emit("call-tip-event", { callId, ...tipMsg });
+    // Notification
+    if (otherData) {
+      const notif = await dbCreateNotification(otherData.name, "tip", userData.name, null, `${amount} ETH`);
+      emitNotification(otherData.name, notif);
+    }
+  });
+
   socket.on("call-request", async ({ targetName }) => {
     if (!rateLimit(socket, "call-request", 3, 60_000)) return;
     const userId = socket.userId; if (!userId) return;
@@ -2181,10 +2420,8 @@ io.on("connection", (socket) => {
     const callee = onlineUsers.get(calleeId);
     if (!callee || callee.disconnectedAt) {
       // User is offline — send a call request notification instead
-      // Find their name from the caller's knowledge or directory
       let calleeName = null;
-      for (const [, d] of onlineUsers) { if (d.name) { /* scan */ } }
-      // Try to find by userId in takenNames reverse lookup
+      // Find name by userId in takenNames reverse lookup
       for (const [name, uid] of takenNames) { if (uid === calleeId) { calleeName = name; break; } }
       if (calleeName) {
         const notif = await dbCreateNotification(calleeName, "call_request", caller.name, null, null);
