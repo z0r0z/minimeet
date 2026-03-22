@@ -2637,7 +2637,7 @@ async function _getOrCreateE2EKeypairInner() {
         _cacheE2EKeypair({ privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: kp.privateKey });
         return _e2eKeypairCache;
       }
-    } catch { localStorage.removeItem("e2e_keypair"); }
+    } catch (e) { console.warn("E2E keypair load error:", e.message); }
   }
 
   // 3. Try to recover encrypted backup from server (X or any verified user)
@@ -2964,7 +2964,7 @@ async function _getOrCreateAppWalletInner() {
         myAppWallet = { address: data.address, privateKey: null };
         return myAppWallet;
       }
-    } catch { localStorage.removeItem("mm_app_wallet"); }
+    } catch (e) { console.warn("App wallet load error:", e.message); }
   }
 
   // Try to recover from server backup
@@ -7128,7 +7128,7 @@ $("#sign-out-link").addEventListener("click", (e) => {
   // Reset state
   myUserId = null; myName = ""; myAvatar = null; myStats = null; myXUsername = null; myWalletAddress = null; myCustomStatus = null; myContacts = []; myAppWallet = null;
   sessionStorage.removeItem("e2e_keypair_decrypted"); sessionStorage.removeItem("mm_app_wallet_decrypted");
-  localStorage.removeItem("mm_app_wallet");
+  // Keep e2e_keypair and mm_app_wallet in localStorage — they're encrypted and needed on re-login
   localStorage.removeItem("mm_wallet_prompted");
   // Back to login
   showScreen("login-screen");
