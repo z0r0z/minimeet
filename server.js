@@ -2190,6 +2190,7 @@ io.on("connection", (socket) => {
       if (!avatarCache[post.author]) avatarCache[post.author] = await dbGetAvatar(post.author) || null;
       post.authorAvatar = avatarCache[post.author];
       post.likers = await dbGetPostLikes(post.id);
+      post.reposters = await dbGetPostReposters(post.id);
     }
     socket.emit("thread", { postId, posts: thread });
   });
