@@ -2770,11 +2770,9 @@ io.on("connection", (socket) => {
     const callerId = socket.userId; if (!callerId) return;
     const caller = onlineUsers.get(callerId); if (!caller) return;
     const callee = onlineUsers.get(calleeId);
-    if (!callee || callee.disconnectedAt) {
-      // User is offline — send a call request notification instead
-      let calleeName = null;
-      // Find name by userId in takenNames reverse lookup
-      for (const [name, uid] of takenNames) { if (uid === calleeId) { calleeName = name; break; } }
+    if (!callee || callee.disconnectedAt || callee.status === "invisible") {
+      // User is offline or invisible — send a call request notification instead
+      const calleeName = callee?.name || [...takenNames.entries()].find(([, uid]) => uid === calleeId)?.[0] || null;
       if (calleeName) {
         const notif = await dbCreateNotification(calleeName, "call_request", caller.name, null, null);
         emitNotification(calleeName, notif);

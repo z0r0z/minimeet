@@ -2601,20 +2601,24 @@ async function _getOrCreateE2EKeypairInner() {
         // Encrypted format — need password to unlock
         const password = await promptPassword("Enter your encryption password to unlock your DM key:");
         if (password) {
-          let usedIter = 600000;
-          const privJWK = JSON.parse(await decryptWithPassword(kp.encrypted, password, { reportIter: (i) => { usedIter = i; } }));
-          // Auto-upgrade legacy 100k → 600k PBKDF2
-          if (usedIter < 600000) {
-            const upgraded = await encryptWithPassword(JSON.stringify(privJWK), password);
-            localStorage.setItem("e2e_keypair", JSON.stringify({ publicKey: kp.publicKey, encrypted: upgraded }));
-            if (socket) socket.emit("backup-e2e-key", { e2eKey: await encryptWithPassword(JSON.stringify({ publicKey: kp.publicKey, privateKey: privJWK }), password) });
-          }
-          const priv = await crypto.subtle.importKey("jwk", privJWK, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
-          const pub = await crypto.subtle.importKey("jwk", kp.publicKey, { name: "ECDH", namedCurve: "P-256" }, true, []);
-          _cacheE2EKeypair({ privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: privJWK });
-          return _e2eKeypairCache;
+          try {
+            let usedIter = 600000;
+            const privJWK = JSON.parse(await decryptWithPassword(kp.encrypted, password, { reportIter: (i) => { usedIter = i; } }));
+            // Auto-upgrade legacy 100k → 600k PBKDF2
+            if (usedIter < 600000) {
+              const upgraded = await encryptWithPassword(JSON.stringify(privJWK), password);
+              localStorage.setItem("e2e_keypair", JSON.stringify({ publicKey: kp.publicKey, encrypted: upgraded }));
+              if (socket) socket.emit("backup-e2e-key", { e2eKey: await encryptWithPassword(JSON.stringify({ publicKey: kp.publicKey, privateKey: privJWK }), password) });
+            }
+            const priv = await crypto.subtle.importKey("jwk", privJWK, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+            const pub = await crypto.subtle.importKey("jwk", kp.publicKey, { name: "ECDH", namedCurve: "P-256" }, true, []);
+            _cacheE2EKeypair({ privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: privJWK });
+            return _e2eKeypairCache;
+          } catch { showToast("Wrong password", "error"); }
         }
-        // User dismissed — fall through to server recovery or generate new
+        // User dismissed or wrong password — don't generate new key, just return null.
+        // They'll be re-prompted next time they try to use DMs.
+        return null;
       } else if (kp.privateKey) {
         // Legacy plaintext format — load immediately, then prompt to migrate
         const priv = await crypto.subtle.importKey("jwk", kp.privateKey, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
@@ -2651,7 +2655,6 @@ async function _getOrCreateE2EKeypairInner() {
           try {
             const decrypted = await decryptWithPassword(serverKey, password);
             const kp = JSON.parse(decrypted);
-            // Store encrypted locally (not plaintext) and re-upload at current PBKDF2 iterations
             const encBlob = await encryptWithPassword(JSON.stringify(kp.privateKey), password);
             localStorage.setItem("e2e_keypair", JSON.stringify({ publicKey: kp.publicKey, encrypted: encBlob }));
             socket.emit("backup-e2e-key", { e2eKey: await encryptWithPassword(JSON.stringify(kp), password) });
@@ -2660,8 +2663,10 @@ async function _getOrCreateE2EKeypairInner() {
             showToast("Encryption key recovered!", "success");
             _cacheE2EKeypair({ privateKey: priv, publicKey: pub, publicKeyJWK: kp.publicKey, privateKeyJWK: kp.privateKey });
             return _e2eKeypairCache;
-          } catch { showToast("Wrong password — generating new key", "error"); }
+          } catch { showToast("Wrong password", "error"); }
         }
+        // User dismissed or wrong password — return null, re-prompt later
+        return null;
       }
     } catch {}
   }
@@ -2708,6 +2713,7 @@ async function deriveSharedSecret(peerPublicKeyJWK) {
   const cacheKey = JSON.stringify(peerPublicKeyJWK);
   if (e2eSharedSecrets.has(cacheKey)) return e2eSharedSecrets.get(cacheKey);
   const kp = await getOrCreateE2EKeypair();
+  if (!kp) return null; // user dismissed password prompt — can't derive shared secret yet
   // Register pubkey if this is the first time the key was unlocked (deferred from login)
   if (socket && kp.publicKeyJWK) socket.emit("register-pubkey", { publicKey: kp.publicKeyJWK });
   const peerKey = await crypto.subtle.importKey("jwk", peerPublicKeyJWK, { name: "ECDH", namedCurve: "P-256" }, false, []);
@@ -2943,11 +2949,13 @@ async function _getOrCreateAppWalletInner() {
         // Encrypted — need password to unlock
         const password = await promptPassword("Enter your password to unlock your app wallet:");
         if (password) {
-          const w = await decryptWalletKey(data, password);
-          _cacheAppWallet(w);
-          return myAppWallet;
+          try {
+            const w = await decryptWalletKey(data, password);
+            _cacheAppWallet(w);
+            return myAppWallet;
+          } catch { showToast("Wrong password", "error"); }
         }
-        // Can't unlock — but we know the address
+        // User dismissed or wrong password — return address-only, re-prompt on next tx
         myAppWallet = { address: data.address, privateKey: null };
         return myAppWallet;
       }
@@ -2974,20 +2982,20 @@ async function _getOrCreateAppWalletInner() {
           try {
             const decrypted = await decryptWithPassword(serverBackup, password);
             const w = JSON.parse(decrypted);
-            // Re-encrypt locally with proper wallet encryption
             const encrypted = await encryptWalletKey(w.privateKey, password, w.address);
             localStorage.setItem("mm_app_wallet", encrypted);
-            // Re-upload server backup at current PBKDF2 iterations (upgrades legacy 100k → 600k)
             if (socket) socket.emit("backup-app-wallet", { wallet: await encryptWithPassword(JSON.stringify(w), password) });
             _cacheAppWallet({ address: w.address, privateKey: w.privateKey });
             return myAppWallet;
-          } catch { /* wrong password */ }
+          } catch { showToast("Wrong password", "error"); }
         }
+        // User dismissed or wrong password — don't generate new wallet, return null
+        return null;
       }
     } catch {}
   }
 
-  // Generate new wallet
+  // No existing wallet found — generate new one
   const wallet = ethers.Wallet.createRandom();
   const address = wallet.address.toLowerCase();
   const privateKey = wallet.privateKey;
@@ -4074,6 +4082,7 @@ async function sendDM() {
       // Wallet address — no key expected, skip warning
     } else if (peerPubKey) {
       const sharedKeys = await deriveSharedSecret(peerPubKey);
+      if (!sharedKeys) { showToast("Unlock your DM key to send encrypted messages", "error"); return; }
       finalText = await encryptDM(payload, sharedKeys.current);
       encrypted = true;
     } else {
@@ -5214,10 +5223,12 @@ function connectSocket() {
         const senderPubKey = await getPeerPublicKey(msg.fromName);
         if (senderPubKey) {
           const sharedKeys = await deriveSharedSecret(senderPubKey);
-          // Try v2 (HKDF) first, fall back to v1 (legacy raw ECDH)
-          let decrypted = await decryptDM(msg.text, sharedKeys.current);
-          if (decrypted === "[cannot decrypt]") decrypted = await decryptDM(msg.text, sharedKeys.legacy);
-          try { const rich = JSON.parse(decrypted); if (rich.t !== undefined) { text = rich.t; image = rich.i || null; } else { text = decrypted; } } catch { text = decrypted; }
+          if (sharedKeys) {
+            // Try v2 (HKDF) first, fall back to v1 (legacy raw ECDH)
+            let decrypted = await decryptDM(msg.text, sharedKeys.current);
+            if (decrypted === "[cannot decrypt]") decrypted = await decryptDM(msg.text, sharedKeys.legacy);
+            try { const rich = JSON.parse(decrypted); if (rich.t !== undefined) { text = rich.t; image = rich.i || null; } else { text = decrypted; } } catch { text = decrypted; }
+          } else { text = "[locked — enter DM password to decrypt]"; }
         } else { text = "[encrypted]"; }
       } catch { text = "[cannot decrypt]"; }
     }
@@ -5293,10 +5304,11 @@ function connectSocket() {
           if (!peerPubKey) peerPubKey = await getPeerPublicKey(peerName);
           if (peerPubKey) {
             const sharedKeys = await deriveSharedSecret(peerPubKey);
-            // Try v2 (HKDF) first, fall back to v1 (legacy raw ECDH)
-            let decrypted = await decryptDM(m.text, sharedKeys.current);
-            if (decrypted === "[cannot decrypt]") decrypted = await decryptDM(m.text, sharedKeys.legacy);
-            try { const rich = JSON.parse(decrypted); if (rich.t !== undefined) { text = rich.t; image = rich.i || null; } else { text = decrypted; } } catch { text = decrypted; }
+            if (sharedKeys) {
+              let decrypted = await decryptDM(m.text, sharedKeys.current);
+              if (decrypted === "[cannot decrypt]") decrypted = await decryptDM(m.text, sharedKeys.legacy);
+              try { const rich = JSON.parse(decrypted); if (rich.t !== undefined) { text = rich.t; image = rich.i || null; } else { text = decrypted; } } catch { text = decrypted; }
+            } else { text = "[locked — enter DM password to decrypt]"; }
           } else { text = "[encrypted]"; }
         } catch { text = "[cannot decrypt]"; }
       }
