@@ -725,7 +725,10 @@ async function dbDeletePost(postId, author) {
       await supabase.from("posts").delete().eq("root_id", postId); // delete replies
       await supabase.from("posts").delete().eq("id", postId);
       if (post.parentId) {
-        try { await supabase.rpc("decrement_post_reply_count", { pid: post.parentId }); } catch {}
+        try { await supabase.rpc("decrement_post_reply_count", { pid: post.parentId }); } catch {
+          const parentPost = await dbGetPost(post.parentId);
+          if (parentPost) await supabase.from("posts").update({ reply_count: Math.max(0, (parentPost.replyCount || 0) - 1) }).eq("id", post.parentId);
+        }
       }
       await supabase.from("notifications").delete().eq("post_id", postId);
       return true;
@@ -2089,8 +2092,17 @@ io.on("connection", (socket) => {
   socket.on("delete-post", async ({ postId }) => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
+    const post = await dbGetPost(postId);
+    const parentId = post ? post.parentId : null;
     const ok = await dbDeletePost(postId, userData.name);
-    if (ok) socket.emit("post-deleted", { postId });
+    if (ok) {
+      socket.emit("post-deleted", { postId });
+      // Update parent's reply count if this was a reply
+      if (parentId) {
+        const parent = await dbGetPost(parentId);
+        if (parent) io.emit("post-reply-count", { postId: parentId, replyCount: parent.replyCount || 0 });
+      }
+    }
   });
 
   socket.on("toggle-like", async ({ postId }) => {
@@ -2100,7 +2112,11 @@ io.on("connection", (socket) => {
     const result = await dbToggleLike(postId, userData.name);
     const post = await dbGetPost(postId);
     const likers = await dbGetPostLikes(postId);
-    socket.emit("post-liked", { postId, likeCount: post ? post.likeCount : 0, liked: result.liked, likers });
+    const likeCount = post ? post.likeCount : 0;
+    // Send liked state to the user who clicked
+    socket.emit("post-liked", { postId, likeCount, liked: result.liked, likers });
+    // Broadcast updated count to all other users (no chime — just silent count update)
+    socket.broadcast.emit("post-like-count", { postId, likeCount, likers });
     // Notify post author on like
     if (result.liked && post && post.author !== userData.name.toLowerCase()) {
       const notif = await dbCreateNotification(post.author, "like", userData.name, postId, null);
