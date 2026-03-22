@@ -1878,7 +1878,7 @@
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
         <span class="call-chat-badge" id="call-chat-badge">0</span>
       </button>
-      <button class="ctrl-btn" id="call-tip-btn" title="Tip" onclick="tipCallPartner()" style="font-size:14px;">💰</button>
+      <button class="ctrl-btn" id="call-tip-btn" title="Tip" onclick="tipCallPartner()"><svg width="16" height="16" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF" fill-rule="nonzero"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></svg></button>
       <button class="ctrl-btn extend-btn" id="extend-call-btn" title="Extend call (+30s)" style="display:none;" onclick="extendCall()">
         <span style="font-size:11px;font-family:var(--font-mono);font-weight:700;">+30s</span>
       </button>
@@ -1943,7 +1943,7 @@
       <div class="chat-input-row">
         <input type="text" class="chat-input" id="stream-chat-input" placeholder="Chat..." maxlength="500" />
         <button class="chat-send" id="stream-chat-send">Send</button>
-        <button class="chat-send" id="stream-tip-btn" style="background:none;border:1px solid var(--border);color:var(--text-muted);font-size:11px;padding:4px 8px;" title="Tip streamer">💰</button>
+        <button class="chat-send" id="stream-tip-btn" style="background:none;border:none;padding:4px;" title="Tip streamer"><svg width="14" height="14" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF" fill-rule="nonzero"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></svg></button>
       </div>
     </div>
 
@@ -2396,13 +2396,11 @@ async function getOrCreateAppWallet() {
   localStorage.setItem("mm_app_wallet", JSON.stringify({ address }));
 
   // Secure the wallet — reuse E2E password if already set, otherwise prompt once
-  if (!localStorage.getItem("mm_wallet_prompted")) {
-    localStorage.setItem("mm_wallet_prompted", "1");
+  // Only prompt if wallet hasn't been secured yet (no encrypted blob in localStorage)
+  const alreadySecured = (() => { try { return !!JSON.parse(localStorage.getItem("mm_app_wallet") || "{}").ct; } catch { return false; } })();
+  if (!alreadySecured) {
     setTimeout(async () => {
-      // Try to get the E2E password from the server backup (if user already set one)
       let password = null;
-      // Check if E2E key backup exists on server — if so, user already has a password
-      // We can't retrieve it, but we can ask them to enter it once
       const hasE2EBackup = await new Promise((resolve) => {
         if (!socket) { resolve(false); return; }
         socket.emit("get-e2e-backup");
@@ -2413,7 +2411,7 @@ async function getOrCreateAppWallet() {
       if (hasE2EBackup) {
         password = prompt("Enter your existing encryption password to also secure your app wallet:");
       } else {
-        password = prompt("Create a password to secure your wallet and encrypted DMs:");
+        password = prompt("Create a password to secure your wallet and encrypted DMs (min 8 chars):");
       }
       if (password && password.length >= 8) {
         try {
@@ -2424,7 +2422,7 @@ async function getOrCreateAppWallet() {
           showToast("App wallet secured", "success");
         } catch (e) { console.warn("Wallet encryption failed:", e); }
       } else {
-        showToast("App wallet created — secure it later from your profile", "info", 4000);
+        showToast("App wallet created — secure it from your profile", "info", 4000);
       }
     }, 2000);
   }
@@ -2593,6 +2591,8 @@ window.saveCustomStatus = function() {
   if (socket) socket.emit("set-status", { customStatus: myCustomStatus });
   updateCustomStatusDisplay();
   closeStatusOverlay();
+  // Refresh profile page if viewing own profile
+  if (profileTarget && profileIsOwn) showProfile(profileTarget);
 };
 window.clearCustomStatus = function() {
   myCustomStatus = null;
@@ -2600,6 +2600,7 @@ window.clearCustomStatus = function() {
   if (socket) socket.emit("set-status", { customStatus: null });
   updateCustomStatusDisplay();
   closeStatusOverlay();
+  if (profileTarget && profileIsOwn) showProfile(profileTarget);
 };
 function updateCustomStatusDisplay() {
   const el = document.getElementById("my-custom-status");
@@ -3782,11 +3783,44 @@ function connectSocket() {
     getOrCreateE2EKeypair().then(kp => {
       if (socket && kp.publicKeyJWK) socket.emit("register-pubkey", { publicKey: kp.publicKeyJWK });
     }).catch(e => console.warn("E2E key setup failed:", e));
-    // Initialize app wallet (auto-generated for tipping)
-    // Create app wallet for all users (burner/secondary wallet)
+    // Initialize app wallet
     getOrCreateAppWallet().then(w => {
       if (socket && w?.address) socket.emit("register-app-wallet", { address: w.address });
     }).catch(e => console.warn("App wallet setup failed:", e));
+    // Show wallet connect button in top-right (Wallet.js) for all logged-in users
+    if (!document.getElementById('walletBtn')) {
+      walletInit({ appName: 'minimeet.cc' });
+    }
+    // If wallet already connected, show it; otherwise show the connect button
+    if (window._connectedAddress) {
+      const wb = document.getElementById('walletBtn');
+      if (wb) wb.style.display = '';
+    } else {
+      const wb = document.getElementById('walletBtn');
+      if (wb) wb.style.display = '';
+    }
+    // Set callback: when user connects wallet via the top-right button, link it to their account
+    setWalletOnConnect([async () => {
+      const addr = window._connectedAddress;
+      if (!addr || !socket) return;
+      // If they don't already have an external wallet linked, link it
+      if (!myWalletAddress) {
+        try {
+          const { signature, nonce } = await requestWalletSignature(addr);
+          myWalletAddress = addr;
+          localStorage.setItem("om_walletAddress", addr);
+          socket.emit("link-wallet", { walletAddress: addr, walletSignature: signature, walletNonce: nonce });
+          showToast("Wallet linked!", "success");
+          updateLinkButtons();
+          let nameHtml = escapeHtml(myName);
+          if (myXUsername) nameHtml += ` <span class="x-handle">@${escapeHtml(myXUsername)}</span>`;
+          nameHtml += ` <a class="wallet-handle" href="https://etherscan.io/address/${escapeHtml(addr)}" target="_blank" rel="noopener" style="text-decoration:none;color:#888;">${escapeHtml(addr.slice(0,6))}...${escapeHtml(addr.slice(-4))}</a>`;
+          $("#my-name-display").innerHTML = nameHtml;
+        } catch (e) {
+          showToast("Wallet verification failed", "error");
+        }
+      }
+    }]);
     // Show quick-post for verified users
     const qp = document.getElementById("quick-post");
     if (qp) qp.classList.toggle("active", !!(xUsername || walletAddress));
@@ -4632,10 +4666,12 @@ function handleProfileData(data) {
   let handleHtml = "";
   if (data.xUsername) handleHtml += `<a href="https://x.com/${escapeHtml(data.xUsername)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">@${escapeHtml(data.xUsername)}</a>`;
   // Show wallet address: external wallet takes priority, then app wallet
-  const profileWallet = data.walletAddress || data.appWalletAddress;
-  if (profileWallet) {
-    const label = data.walletAddress ? "" : "app ";
-    handleHtml += (handleHtml ? " · " : "") + `<a href="https://etherscan.io/address/${escapeHtml(profileWallet)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;" title="${label}wallet">${escapeHtml(profileWallet.slice(0,6))}...${escapeHtml(profileWallet.slice(-4))}</a>`;
+  // Show wallets — external first, then app wallet if different
+  if (data.walletAddress) {
+    handleHtml += (handleHtml ? " · " : "") + `<a href="https://etherscan.io/address/${escapeHtml(data.walletAddress)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;" title="wallet">${escapeHtml(data.walletAddress.slice(0,6))}...${escapeHtml(data.walletAddress.slice(-4))}</a>`;
+  }
+  if (data.appWalletAddress && data.appWalletAddress !== data.walletAddress) {
+    handleHtml += (handleHtml ? " · " : "") + `<a href="https://etherscan.io/address/${escapeHtml(data.appWalletAddress)}" target="_blank" rel="noopener" style="color:#555;text-decoration:none;font-size:10px;" title="app wallet">${escapeHtml(data.appWalletAddress.slice(0,6))}...${escapeHtml(data.appWalletAddress.slice(-4))}</a>`;
   }
   // Add online/offline status
   if (!profileIsOwn) {
@@ -4689,7 +4725,7 @@ function handleProfileData(data) {
     // Bio/banner editing handled inline (click bio text or pencil icon on banner)
     const myTipAddr = myWalletAddress || (myAppWallet ? myAppWallet.address : null);
     if (myTipAddr) {
-      actionsHtml += `<button class="profile-action-btn" onclick="tipUser('${escapeHtml(myTipAddr)}','${escapeHtml(myName).replace(/'/g,"\\'")}')">Deposit ETH</button>`;
+      actionsHtml += `<button style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:6px;" onclick="tipUser('${escapeHtml(myTipAddr)}','${escapeHtml(myName).replace(/'/g,"\\'")}')"><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF" fill-rule="nonzero"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></svg></button>`;
     }
     actionsHtml += `<button style="background:none;border:none;color:#555;cursor:pointer;padding:4px;transition:color 0.15s;" onclick="copyProfileLink('${escapeHtml(myName).replace(/'/g,"\\'")}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></button>`;
     // Key export for guests (no X or wallet to recover from)
@@ -4703,17 +4739,18 @@ function handleProfileData(data) {
     const online = users.find(u => u.name.toLowerCase() === data.username.toLowerCase());
     // Message button always visible and prominent
     // DM icon button
-    actionsHtml += `<button class="profile-action-btn primary" onclick="openDM(${online?"'"+online.userId+"'":"null"},'${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}',${data.avatar?"'"+data.avatar.replace(/'/g,"\\'")+"'":"null"})" title="Message"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> Message</button>`;
-    // Call icon button
+    // Bare icon buttons — no background, no border
+    const iconBtnStyle = "background:none;border:none;color:var(--text-muted);cursor:pointer;padding:6px;transition:color 0.15s;display:inline-flex;align-items:center;gap:4px;font-size:11px;font-family:var(--font-mono);";
+    actionsHtml += `<button style="${iconBtnStyle}" onclick="openDM(${online?"'"+online.userId+"'":"null"},'${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}',${data.avatar?"'"+data.avatar.replace(/'/g,"\\'")+"'":"null"})" title="Message"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg></button>`;
     if (online) {
-      actionsHtml += `<button class="profile-action-btn primary" onclick="callUser('${online.userId}','${escapeHtml(online.name).replace(/'/g,"\\'")}',${online.avatar?"'"+online.avatar.replace(/'/g,"\\'")+"'":"null"})" title="Call"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg> Call</button>`;
+      actionsHtml += `<button style="${iconBtnStyle}" onclick="callUser('${online.userId}','${escapeHtml(online.name).replace(/'/g,"\\'")}',${online.avatar?"'"+online.avatar.replace(/'/g,"\\'")+"'":"null"})" title="Call"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg></button>`;
     } else {
-      actionsHtml += `<button class="profile-action-btn" onclick="callBackUser('${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.362 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg> Request</button>`;
+      actionsHtml += `<button style="${iconBtnStyle}" onclick="callBackUser('${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6A19.79 19.79 0 012.12 4.18 2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.362 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg></button>`;
     }
     // Tip button
     const tipAddr = data.walletAddress || data.appWalletAddress;
     if (tipAddr) {
-      actionsHtml += `<button class="profile-action-btn" onclick="tipUser('${escapeHtml(tipAddr)}','${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')">Tip ETH</button>`;
+      actionsHtml += `<button style="${iconBtnStyle}" onclick="tipUser('${escapeHtml(tipAddr)}','${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')"><svg width="16" height="16" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF" fill-rule="nonzero"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></svg></button>`;
     }
     // Share icon (no border)
     actionsHtml += `<button style="background:none;border:none;color:#555;cursor:pointer;padding:4px;transition:color 0.15s;" onclick="copyProfileLink('${escapeHtml(data.displayName||data.username).replace(/'/g,"\\'")}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></button>`;
@@ -5081,8 +5118,15 @@ let tipTargetName = null;
 let tipContext = null; // "profile" | "stream" | "call"
 
 window.tipUser = function(walletAddress, displayName, context) {
-  if (!window._signer) {
-    showToast("Connect your wallet first to send a tip", "error");
+  // Check if we have any signer available (external wallet or app wallet)
+  const hasSigner = window._signer || (myAppWallet?.privateKey);
+  if (!hasSigner) {
+    if (typeof showWalletModal === "function") {
+      showToast("Connect a wallet to send a tip", "info");
+      showWalletModal();
+    } else {
+      showToast("Connect your wallet first", "error");
+    }
     return;
   }
   tipTargetAddress = walletAddress;
@@ -5125,8 +5169,17 @@ window.confirmTip = async function() {
   const tipMsg = document.getElementById("tip-message").value.trim();
   closeTipOverlay();
   try {
-    showToast("Confirm in your wallet...", "info", 5000);
-    const tx = await window._signer.sendTransaction({
+    // Use external wallet signer if available, otherwise use app wallet
+    let signer = window._signer;
+    if (!signer && myAppWallet?.privateKey) {
+      const provider = new ethers.JsonRpcProvider("https://ethereum.publicnode.com", 1, { staticNetwork: true });
+      signer = new ethers.Wallet(myAppWallet.privateKey, provider);
+      showToast("Sending from app wallet...", "info", 3000);
+    } else {
+      showToast("Confirm in your wallet...", "info", 5000);
+    }
+    if (!signer) { showToast("No wallet available", "error"); return; }
+    const tx = await signer.sendTransaction({
       to: addr,
       value: ethers.parseEther(amount),
     });
