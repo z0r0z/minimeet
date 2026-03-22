@@ -1484,6 +1484,31 @@ async function countFollowers(name, xUsername) {
   return followers;
 }
 
+async function getFollowerNames(name, xUsername) {
+  const followers = [];
+  if (supabase) {
+    try {
+      const { data: d1 } = await supabase.from("contacts").select("owner").eq("contact_name", name);
+      if (d1) for (const r of d1) followers.push(r.owner);
+      if (xUsername) {
+        const { data: d2 } = await supabase.from("contacts").select("owner").eq("contact_name", "@" + xUsername.toLowerCase());
+        if (d2) for (const r of d2) if (!followers.includes(r.owner)) followers.push(r.owner);
+      }
+    } catch {}
+  } else {
+    const store = jsonStores["contacts"] || {};
+    for (const [owner, val] of Object.entries(store)) {
+      try {
+        const contacts = JSON.parse(val);
+        if (contacts.includes(name) || (xUsername && contacts.includes("@" + xUsername.toLowerCase()))) {
+          if (!followers.includes(owner)) followers.push(owner);
+        }
+      } catch {}
+    }
+  }
+  return followers;
+}
+
 const MAX_NAME_LENGTH = 30;
 const MAX_AVATAR_BYTES = 200_000; // ~200KB for a 128x128 JPEG
 
@@ -2494,6 +2519,23 @@ io.on("connection", (socket) => {
     socket.emit("social-score", score);
   });
 
+  socket.on("get-followers", async ({ username }) => {
+    if (!socket.userId || !onlineUsers.has(socket.userId)) return;
+    if (!username || typeof username !== "string") return;
+    const key = username.toLowerCase().trim();
+    // Resolve xUsername from directory
+    const dirEntry = await dbGetDirectoryEntry(key);
+    const xUsername = dirEntry?.xUsername || null;
+    const followerNames = await getFollowerNames(key, xUsername);
+    // Enrich with avatars
+    const followers = await Promise.all(followerNames.map(async (name) => {
+      const avatar = await dbGetAvatar(name);
+      const entry = await dbGetDirectoryEntry(name);
+      return { name: entry?.displayName || name, avatar: avatar || entry?.avatar || null, xUsername: entry?.xUsername || null };
+    }));
+    socket.emit("followers-list", { username: key, followers });
+  });
+
   socket.on("get-my-pairs", async () => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
@@ -3062,6 +3104,30 @@ async function getFullDirectory() {
 
 app.get("/api/directory", async (req, res) => {
   res.json(await getFullDirectory());
+});
+
+// Public profile preview (no auth required — for shared profile links)
+app.get("/api/profile/:name", async (req, res) => {
+  const key = (req.params.name || "").toLowerCase().trim();
+  if (!key) return res.status(400).json({ error: "Name required" });
+  const [profile, stats, avatar, dirEntry, followers] = await Promise.all([
+    dbGetProfile(key), dbGetStats(key), dbGetAvatar(key),
+    dbGetDirectoryEntry(key), countFollowers(key, null),
+  ]);
+  const xUsername = dirEntry?.xUsername || null;
+  // Count followers again with xUsername if found
+  const totalFollowers = xUsername ? await countFollowers(key, xUsername) : followers;
+  const resolvedAvatar = avatar || dirEntry?.avatar || null;
+  if (!resolvedAvatar && !profile.bio && !stats.totalMeets && !dirEntry) return res.status(404).json({ error: "User not found" });
+  res.json({
+    name: dirEntry?.displayName || key,
+    avatar: resolvedAvatar,
+    bio: profile.bio || null,
+    xUsername,
+    customStatus: profile.customStatus || null,
+    followers: totalFollowers,
+    stats: { totalMeets: stats.totalMeets || 0, totalOnlineMs: stats.totalOnlineMs || 0 },
+  });
 });
 
 app.get("/api/stats", async (req, res) => {

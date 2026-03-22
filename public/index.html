@@ -5388,6 +5388,36 @@ function connectSocket() {
   // ── Profile & Posts ─────────────────────────────────────────────────────
   socket.on("profile", (data) => { handleProfileData(data); });
 
+  socket.on("followers-list", ({ username, followers }) => {
+    if (!followers || followers.length === 0) return;
+    // Show followers in a simple overlay list
+    const existing = document.getElementById("followers-overlay");
+    if (existing) existing.remove();
+    const overlay = document.createElement("div");
+    overlay.id = "followers-overlay";
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:250;display:flex;align-items:flex-start;justify-content:center;padding-top:80px;";
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    const card = document.createElement("div");
+    card.style.cssText = "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;width:320px;max-width:90vw;max-height:60vh;overflow-y:auto;";
+    card.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div style="font-size:14px;font-weight:600;">${followers.length} Follower${followers.length !== 1 ? "s" : ""}</div>
+      <button onclick="this.closest('#followers-overlay').remove()" style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer;padding:4px 8px;line-height:1;">&times;</button>
+    </div>` + followers.map(f => {
+      const color = getColor(f.name);
+      const bg = f.avatar ? `background:${safeCssUrl(f.avatar)} center/cover` : `background:${color}`;
+      const initials = f.avatar ? "" : `<span style="font-family:var(--font-mono);font-size:9px;font-weight:700;color:#fff">${getInitials(f.name)}</span>`;
+      return `<div style="display:flex;align-items:center;gap:10px;padding:8px 4px;cursor:pointer;" onclick="this.closest('#followers-overlay').remove();showProfile('${escapeJSAttr(f.name)}')">
+        <div style="width:32px;height:32px;border-radius:50%;${bg};display:flex;align-items:center;justify-content:center;flex-shrink:0;background-size:cover;background-position:center;">${initials}</div>
+        <div>
+          <div style="font-size:13px;font-weight:500;">${escapeHtml(f.name)}</div>
+          ${f.xUsername ? `<div style="font-size:11px;color:var(--text-muted);">@${escapeHtml(f.xUsername)}</div>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  });
+
   socket.on("user-posts", ({ username, posts, total }) => {
     const list = document.getElementById("profile-posts-list");
     if (!list) return;
@@ -5850,6 +5880,11 @@ function linkify(text) {
 let profileTarget = null; // username being viewed
 let profileIsOwn = false;
 
+window.showFollowers = function(username) {
+  if (!socket) return;
+  socket.emit("get-followers", { username });
+};
+
 function showProfile(username) {
   profileTarget = username;
   pendingProfilePostImage = null; // reset on profile switch
@@ -6015,7 +6050,7 @@ function handleProfileData(data) {
     // Update own score ticker if viewing own profile
     if (profileIsOwn) { updateSocialScoreBase(data.socialScore.score); startSocialScoreTicker(); }
   }
-  if (data.followers > 0) statsHtml += `<div><span>${data.followers}</span> follower${data.followers !== 1 ? "s" : ""}</div>`;
+  if (data.followers > 0) statsHtml += `<div style="cursor:pointer;text-decoration:underline;text-underline-offset:3px;" onclick="showFollowers('${escapeJSAttr(data.username)}')"><span>${data.followers}</span> follower${data.followers !== 1 ? "s" : ""}</div>`;
   if (data.postCount > 0) statsHtml += `<div><span>${data.postCount}</span> posts</div>`;
   if (data.stats?.totalMeets > 0) statsHtml += `<div><span>${data.stats.totalMeets}</span> meets</div>`;
   if (data.stats?.received > 0) statsHtml += `<div><span>${pickupRate(data.stats)}%</span> pickup</div>`;
@@ -7284,6 +7319,34 @@ window.addEventListener("load", async () => {
     const profileLink = decodeURIComponent(params.get("profile"));
     localStorage.setItem("om_profileLink", profileLink);
     window.history.replaceState({}, "", "/");
+    // Show profile preview on login screen for unauthenticated visitors
+    fetch(`/api/profile/${encodeURIComponent(profileLink)}`).then(r => r.ok ? r.json() : null).then(data => {
+      if (!data || myUserId) return; // skip if already logged in
+      const container = document.getElementById("login-screen");
+      if (!container) return;
+      const preview = document.createElement("div");
+      preview.id = "profile-preview";
+      preview.style.cssText = "width:320px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px;text-align:center;margin-bottom:4px;";
+      const color = getColor(data.name);
+      const bg = data.avatar ? `${safeCssUrl(data.avatar)} center/cover` : color;
+      const initials = data.avatar ? "" : `<span style="font-family:var(--font-mono);font-size:14px;font-weight:700;color:#fff">${getInitials(data.name)}</span>`;
+      let meta = [];
+      if (data.xUsername) meta.push(`@${escapeHtml(data.xUsername)}`);
+      if (data.followers > 0) meta.push(`${data.followers} follower${data.followers !== 1 ? "s" : ""}`);
+      if (data.stats?.totalMeets > 0) meta.push(`${data.stats.totalMeets} meets`);
+      preview.innerHTML = `
+        <div style="width:56px;height:56px;border-radius:50%;background:${bg};display:flex;align-items:center;justify-content:center;margin:0 auto 10px;background-size:cover;background-position:center;">${initials}</div>
+        <div style="font-size:16px;font-weight:600;margin-bottom:4px;">${escapeHtml(data.name)}</div>
+        ${meta.length ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${meta.join(" · ")}</div>` : ""}
+        ${data.customStatus ? `<div style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);margin-bottom:6px;">${escapeHtml(data.customStatus)}</div>` : ""}
+        ${data.bio ? `<div style="font-size:12px;color:#888;line-height:1.4;">${escapeHtml(data.bio)}</div>` : ""}
+        <div style="font-size:11px;color:var(--text-muted);margin-top:10px;">Sign in to connect</div>
+      `;
+      // Insert before the login form
+      const loginBtn = container.querySelector(".login-btn");
+      if (loginBtn) container.insertBefore(preview, loginBtn.closest(".login-form-row") || loginBtn);
+      else container.querySelector(".login-logo")?.after(preview);
+    }).catch(() => {});
   }
 
   if (params.get("stream")) {
