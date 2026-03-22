@@ -4468,6 +4468,11 @@ function renderContacts(filter = "") {
   const savedOnline = availableOthers.filter(u => isSaved(u.name, u.xUsername) && u.name.toLowerCase().includes(filterLower));
   const savedOfflineNames = myContacts.filter(contactName => {
     if (!contactName.includes(filterLower)) return false;
+    // Exclude self
+    const isSelf = contactName.startsWith("@")
+      ? (myXUsername && contactName.slice(1).toLowerCase() === myXUsername.toLowerCase())
+      : (myName && contactName.toLowerCase() === myName.toLowerCase());
+    if (isSelf) return false;
     // Check if this contact matches any online user (by name or @xhandle)
     if (contactName.startsWith("@")) {
       const handle = contactName.slice(1);
@@ -6456,7 +6461,8 @@ function renderDirectory(filter = "") {
       if (u.xUsername) meta.push("@" + escapeHtml(u.xUsername));
       if (u.walletAddress) meta.push(`<a href="https://etherscan.io/address/${escapeHtml(u.walletAddress)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--text-muted);text-decoration:none;">${escapeHtml(u.walletAddress.slice(0,6))}...${escapeHtml(u.walletAddress.slice(-4))}</a>`);
       const online = users.find(ou => ou.name.toLowerCase() === u.name.toLowerCase());
-      if (online) meta.push('<span style="color:var(--green)">online</span>');
+      if (online && online.status === "idle") meta.push('<span style="color:var(--amber)">away</span>');
+      else if (online) meta.push('<span style="color:var(--green)">online</span>');
       else if (u.lastSeen) meta.push(timeAgo(u.lastSeen));
       const isSelf = myName && u.name.toLowerCase() === myName.toLowerCase();
       return `<div class="directory-item" onclick="directoryAction('${escapeJSAttr(escapeHtml(u.name))}', ${u.xUsername ? "'" + escapeJSAttr(escapeHtml(u.xUsername)) + "'" : "null"})">
