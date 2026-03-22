@@ -1694,6 +1694,15 @@ io.on("connection", (socket) => {
     await dbAddContact(userData.name, contactName);
     const contacts = await dbGetContacts(userData.name);
     socket.emit("contacts-list", contacts);
+    // Notify the person being followed
+    const targetName = contactName.startsWith("@") ? contactName.slice(1) : contactName;
+    // Resolve @handle to registered name
+    let resolvedName = targetName;
+    if (contactName.startsWith("@")) {
+      for (const [, d] of onlineUsers) { if (d.xUsername && d.xUsername.toLowerCase() === targetName.toLowerCase()) { resolvedName = d.name; break; } }
+    }
+    const notif = await dbCreateNotification(resolvedName, "follow", userData.name, null, null);
+    emitNotification(resolvedName, notif);
   });
 
   socket.on("remove-contact", async ({ contactName }) => {

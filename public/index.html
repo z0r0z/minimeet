@@ -4355,6 +4355,7 @@ function connectSocket() {
     else if (notif.type === "dm") showToast(`${notif.fromUser}: ${(notif.preview || "").slice(0, 40)}`, "info", 2000);
     else if (notif.type === "call_request") showToast(`📞 ${notif.fromUser} wants to call you — check notifications`, "info", 5000);
     else if (notif.type === "post") showToast(`${notif.fromUser} posted: ${(notif.preview || "").slice(0, 40)}`, "info", 3000);
+    else if (notif.type === "follow") showToast(`${notif.fromUser} followed you`, "success", 2000);
     else if (notif.type === "tip") showToast(`💰 ${notif.fromUser} tipped you ${notif.preview}!`, "success", 5000);
   });
 
@@ -5021,6 +5022,7 @@ function renderNotifications(notifications) {
     else if (n.type === "poke") text = `<strong>${escapeHtml(n.fromUser)}</strong> poked you 👋`;
     else if (n.type === "call_request") text = `<strong>${escapeHtml(n.fromUser)}</strong> wants to call you 📞`;
     else if (n.type === "post") text = `<strong>${escapeHtml(n.fromUser)}</strong> posted: ${escapeHtml(n.preview || "")}`;
+    else if (n.type === "follow") text = `<strong>${escapeHtml(n.fromUser)}</strong> followed you`;
     else if (n.type === "tip") text = `<strong>${escapeHtml(n.fromUser)}</strong> tipped you ${escapeHtml(n.preview || "")} 💰`;
     let onclick;
     if (n.postId) onclick = `showProfile(profileTarget||'${escapeHtml(myName).replace(/'/g,"\\'")}');showThread('${n.postId}')`;
