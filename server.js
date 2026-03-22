@@ -592,19 +592,16 @@ async function dbLoadReactions(msgIds) {
 
 async function dbSaveDM(senderName, receiverName, msg) {
   const pair = [senderName, receiverName].map(n => n.toLowerCase().trim()).sort().join(":");
-  console.log(`💾 dbSaveDM: pair="${pair}" sender="${senderName}" receiver="${receiverName}" encrypted=${!!msg.encrypted} text=${(msg.text||"").slice(0,30)}`);
   if (supabase) {
     try {
       const row = { id: msg.id, pair, sender: senderName.toLowerCase().trim(), sender_name: msg.fromName, text: msg.text, created_at: new Date(msg.ts).toISOString() };
       if (msg.encrypted) row.encrypted = true;
       if (msg.image) row.image = msg.image;
       const { error } = await supabase.from("direct_messages").insert(row);
-      if (error) console.warn(`💾 dbSaveDM INSERT error: ${error.message} code=${error.code}`);
       if (error && msg.image) {
         // Retry without image in case the column doesn't exist yet
         delete row.image;
-        const { error: e2 } = await supabase.from("direct_messages").insert(row);
-        if (e2) console.warn(`💾 dbSaveDM retry error: ${e2.message}`);
+        await supabase.from("direct_messages").insert(row);
       }
     } catch (e) { console.warn("DM write error:", e.message); }
     return;
@@ -618,16 +615,13 @@ async function dbSaveDM(senderName, receiverName, msg) {
 
 async function dbLoadDMs(nameA, nameB, limit = 50, before = null) {
   const pair = [nameA, nameB].map(n => n.toLowerCase().trim()).sort().join(":");
-  console.log(`📨 dbLoadDMs: pair="${pair}" nameA="${nameA}" nameB="${nameB}"`);
   if (supabase) {
     try {
       let query = supabase.from("direct_messages")
         .select("*").eq("pair", pair)
         .order("created_at", { ascending: false }).limit(limit);
       if (before) query = query.lt("created_at", new Date(before).toISOString());
-      const { data, error } = await query;
-      if (error) console.warn(`📨 dbLoadDMs query error: ${error.message}`);
-      console.log(`📨 dbLoadDMs: found ${data ? data.length : 0} messages for pair="${pair}"`);
+      const { data } = await query;
       if (data) return data.reverse().map(d => ({
         id: d.id, sender: d.sender, senderName: d.sender_name, text: d.text, image: d.image || null, encrypted: d.encrypted || false, ts: new Date(d.created_at).getTime(),
       }));
@@ -2239,7 +2233,6 @@ io.on("connection", (socket) => {
       dbLoadDMs(myKey, peerKey, safeLimit, safeBefore),
       safeBefore ? Promise.resolve(0) : dbGetReadCursor(peerKey, myKey), // only load on initial fetch
     ]);
-    if (messages.length === 0) console.log(`📭 dm-history: no messages for pair ${myKey}:${peerKey}`);
     socket.emit("dm-history", { peerName, messages, hasMore: messages.length === safeLimit, peerReadAt: peerReadAt || 0 });
   });
 
@@ -3110,10 +3103,8 @@ app.get("/api/dm-conversations", async (req, res) => {
   if (!token) return res.status(401).json({ error: "Authentication required" });
   const storedHash = await dbGetSessionToken(name);
   if (!storedHash || hashToken(token) !== storedHash) {
-    console.warn(`🔒 dm-conversations AUTH FAIL: name="${name}" storedHash=${!!storedHash} tokenMatch=${storedHash ? hashToken(token) === storedHash : "N/A"}`);
     return res.status(403).json({ error: "Invalid session" });
   }
-  console.log(`📋 dm-conversations: name="${name}" auth=OK`);
   if (supabase) {
     try {
       // Use parameterized .like() queries instead of .or() with string interpolation
@@ -3124,7 +3115,6 @@ app.get("/api/dm-conversations", async (req, res) => {
         supabase.from("direct_messages").select("pair, text, encrypted, created_at").like("pair", `%:${safeName}`).order("created_at", { ascending: false }).limit(100),
       ]);
       const data = [...(d1 || []), ...(d2 || [])];
-      console.log(`📋 dm-conversations: d1=${d1?.length||0} d2=${d2?.length||0} total=${data.length} safeName="${safeName}"`);
       if (data) {
         // Group by pair, take latest message per conversation
         const convos = new Map();

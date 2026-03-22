@@ -2871,6 +2871,10 @@ window.importE2EKey = function() {
 // ── App Wallet (auto-generated for every user) ─────────────────────────
 
 let myAppWallet = null; // { address, privateKey } — only in memory while logged in
+function _cacheAppWallet(w) {
+  myAppWallet = w;
+  if (w?.privateKey) try { sessionStorage.setItem("mm_app_wallet_decrypted", JSON.stringify(w)); } catch {}
+}
 
 // Encrypt private key with password (AES-GCM, PBKDF2 600k iterations, AAD = address)
 async function encryptWalletKey(privateKey, password, address) {
@@ -2895,7 +2899,24 @@ async function decryptWalletKey(payload, password) {
   return { address: data.address, privateKey: new TextDecoder().decode(pt) };
 }
 
+let _appWalletPending = null; // concurrency guard
+
 async function getOrCreateAppWallet() {
+  if (myAppWallet?.privateKey) return myAppWallet;
+  if (_appWalletPending) return _appWalletPending;
+  _appWalletPending = _getOrCreateAppWalletInner();
+  try { return await _appWalletPending; } finally { _appWalletPending = null; }
+}
+async function _getOrCreateAppWalletInner() {
+  // Check sessionStorage first (survives refresh, no password needed)
+  const sessionCached = sessionStorage.getItem("mm_app_wallet_decrypted");
+  if (sessionCached) {
+    try {
+      const w = JSON.parse(sessionCached);
+      if (w.address && w.privateKey) { myAppWallet = w; return myAppWallet; }
+    } catch { sessionStorage.removeItem("mm_app_wallet_decrypted"); }
+  }
+
   // Check localStorage for existing wallet
   const stored = localStorage.getItem("mm_app_wallet");
   if (stored) {
@@ -2903,7 +2924,7 @@ async function getOrCreateAppWallet() {
       const data = JSON.parse(stored);
       if (data.privateKey) {
         // Legacy plaintext — load immediately, then prompt to re-encrypt
-        myAppWallet = { address: data.address, privateKey: data.privateKey };
+        _cacheAppWallet({ address: data.address, privateKey: data.privateKey });
         setTimeout(async () => {
           const pw = await promptPassword("Your app wallet key is stored unencrypted. Set a password to secure it (min 8 chars):");
           if (pw && pw.length >= 8) {
@@ -2923,7 +2944,7 @@ async function getOrCreateAppWallet() {
         const password = await promptPassword("Enter your password to unlock your app wallet:");
         if (password) {
           const w = await decryptWalletKey(data, password);
-          myAppWallet = w;
+          _cacheAppWallet(w);
           return myAppWallet;
         }
         // Can't unlock — but we know the address
@@ -2958,7 +2979,7 @@ async function getOrCreateAppWallet() {
             localStorage.setItem("mm_app_wallet", encrypted);
             // Re-upload server backup at current PBKDF2 iterations (upgrades legacy 100k → 600k)
             if (socket) socket.emit("backup-app-wallet", { wallet: await encryptWithPassword(JSON.stringify(w), password) });
-            myAppWallet = { address: w.address, privateKey: w.privateKey };
+            _cacheAppWallet({ address: w.address, privateKey: w.privateKey });
             return myAppWallet;
           } catch { /* wrong password */ }
         }
@@ -2970,7 +2991,7 @@ async function getOrCreateAppWallet() {
   const wallet = ethers.Wallet.createRandom();
   const address = wallet.address.toLowerCase();
   const privateKey = wallet.privateKey;
-  myAppWallet = { address, privateKey };
+  _cacheAppWallet({ address, privateKey });
 
   // Store address immediately so it's registered even without password
   localStorage.setItem("mm_app_wallet", JSON.stringify({ address }));
@@ -7067,6 +7088,7 @@ $("#sign-out-link").addEventListener("click", (e) => {
   if (socket) socket.disconnect();
   // Reset state
   myUserId = null; myName = ""; myAvatar = null; myStats = null; myXUsername = null; myWalletAddress = null; myCustomStatus = null; myContacts = []; myAppWallet = null;
+  sessionStorage.removeItem("e2e_keypair_decrypted"); sessionStorage.removeItem("mm_app_wallet_decrypted");
   localStorage.removeItem("mm_app_wallet");
   localStorage.removeItem("mm_wallet_prompted");
   // Back to login
