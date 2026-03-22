@@ -5,14 +5,25 @@ const { v4: uuidv4 } = require("uuid");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { verifyMessage, Wallet: EthersWallet } = require("ethers");
+const { verifyMessage, computeAddress } = require("ethers");
 
 const app = express();
 const server = http.createServer(app);
 
+const IS_PROD = process.env.NODE_ENV === "production";
+
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
-  : ["http://localhost:3001", "https://minimeet.cc"];
+  : IS_PROD ? ["https://minimeet.cc"] : ["http://localhost:3001", "https://minimeet.cc"];
+
+// ─── Security headers ────────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  if (IS_PROD) res.setHeader("Strict-Transport-Security", "max-age=63072000; includeSubDomains");
+  next();
+});
 
 const io = new Server(server, {
   cors: { origin: ALLOWED_ORIGINS, methods: ["GET", "POST"] },
@@ -227,8 +238,8 @@ function deriveWalletFromXId(xId) {
   // HMAC-SHA256(server_secret, "minimeet-wallet:" + xId) → 32 bytes → derive address only
   const privateKeyBytes = crypto.createHmac("sha256", WALLET_DERIVATION_SECRET)
     .update("minimeet-wallet:" + xId).digest();
-  const wallet = new EthersWallet("0x" + privateKeyBytes.toString("hex"));
-  return { address: wallet.address.toLowerCase() };
+  const address = computeAddress("0x" + privateKeyBytes.toString("hex"));
+  return { address: address.toLowerCase() };
 }
 
 // Endpoint: get the deterministic address for any X username (no auth needed — address is public)
@@ -256,6 +267,11 @@ setInterval(() => {
 }, 300_000);
 
 const nonceRateLimit = new Map(); // IP → { count, resetAt }
+// Clean up stale rate-limit entries every 5 min
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of nonceRateLimit) { if (now > v.resetAt) nonceRateLimit.delete(k); }
+}, 300_000);
 app.get("/auth/wallet/nonce", (req, res) => {
   // Rate limit: max 10 nonce requests per IP per minute
   const ip = req.ip || req.connection.remoteAddress;
@@ -264,8 +280,11 @@ app.get("/auth/wallet/nonce", (req, res) => {
   rl.count++;
   nonceRateLimit.set(ip, rl);
   if (rl.count > 10) return res.status(429).json({ error: "Too many requests" });
-  // Cap nonce map size to prevent memory exhaustion
-  if (walletNonces.size > 10000) walletNonces.clear();
+  // Evict oldest nonces to prevent memory exhaustion (not clear-all — avoids DoS)
+  if (walletNonces.size > 10000) {
+    const sorted = [...walletNonces.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt);
+    for (let i = 0; i < 2000; i++) walletNonces.delete(sorted[i][0]);
+  }
 
   const address = (req.query.address || "").toLowerCase().trim();
   if (!/^0x[0-9a-f]{40}$/.test(address)) return res.status(400).json({ error: "Invalid address" });
@@ -322,6 +341,18 @@ async function dbSetXProfile(username, profile) {
   jsonSet("x_profiles", key, JSON.stringify(profile));
 }
 
+// ─── Cache size limits ──────────────────────────────────────────────────────
+const MAX_CACHE_SIZE = 5000;
+function cacheSet(map, key, value) {
+  if (map.size >= MAX_CACHE_SIZE) { const first = map.keys().next().value; map.delete(first); }
+  map.set(key, value);
+}
+
+// Sanitizer for PostgREST filter interpolation.
+// Strips characters that are PostgREST operators (,.()) and SQL wildcards (%_\)
+// while preserving characters that can appear in usernames/wallet addresses.
+function safeFilterKey(s) { return String(s).replace(/[,.()\[\]%_\\]/g, ""); }
+
 // ─── Avatar persistence ─────────────────────────────────────────────────────
 
 const avatarCache = new Map();
@@ -332,7 +363,7 @@ async function dbGetAvatar(name) {
   if (supabase) {
     try {
       const { data } = await supabase.from("avatars").select("data").eq("name", key).single();
-      if (data) { avatarCache.set(key, data.data); return data.data; }
+      if (data) { cacheSet(avatarCache,key, data.data); return data.data; }
     } catch {}
     return null;
   }
@@ -341,7 +372,7 @@ async function dbGetAvatar(name) {
 
 async function dbSetAvatar(name, dataUrl) {
   const key = name.toLowerCase().trim();
-  if (dataUrl) avatarCache.set(key, dataUrl); else avatarCache.delete(key);
+  if (dataUrl) cacheSet(avatarCache,key, dataUrl); else avatarCache.delete(key);
   if (supabase) {
     try {
       if (dataUrl) await supabase.from("avatars").upsert({ name: key, data: dataUrl, updated_at: new Date().toISOString() });
@@ -368,23 +399,23 @@ async function dbGetStats(name) {
       const { data } = await supabase.from("call_stats").select("*").eq("name", key).single();
       if (data) {
         const stats = { received: data.received||0, accepted: data.accepted||0, declined: data.declined||0, missed: data.missed||0, streak: data.streak||0, best_streak: data.best_streak||0, totalMeets: data.total_meets||0, totalOnlineMs: data.total_online_ms||0, creditSeconds: data.credit_seconds||0 };
-        statsCache.set(key, stats);
+        cacheSet(statsCache,key, stats);
         return stats;
       }
     } catch {}
     const fresh = defaultStats();
-    statsCache.set(key, fresh);
+    cacheSet(statsCache,key, fresh);
     return fresh;
   }
   const stored = jsonGet("stats", key);
   let stats; try { stats = stored ? JSON.parse(stored) : defaultStats(); } catch { stats = defaultStats(); }
-  statsCache.set(key, stats);
+  cacheSet(statsCache,key, stats);
   return stats;
 }
 
 async function dbSetStats(name, stats) {
   const key = name.toLowerCase().trim();
-  statsCache.set(key, stats);
+  cacheSet(statsCache,key, stats);
   if (supabase) {
     try {
       await supabase.from("call_stats").upsert({ name: key, received: stats.received, accepted: stats.accepted, declined: stats.declined, missed: stats.missed, streak: stats.streak, best_streak: stats.best_streak, total_meets: stats.totalMeets, total_online_ms: stats.totalOnlineMs, credit_seconds: stats.creditSeconds || 0, updated_at: new Date().toISOString() });
@@ -415,15 +446,15 @@ async function dbGetContacts(ownerName) {
     try {
       const { data } = await supabase.from("contacts").select("contact_name").eq("owner", key);
       const names = (data || []).map(r => r.contact_name);
-      contactsCache.set(key, new Set(names));
+      cacheSet(contactsCache,key, new Set(names));
       return names;
     } catch (e) { console.warn("Contacts read error:", e.message); }
-    contactsCache.set(key, new Set());
+    cacheSet(contactsCache,key, new Set());
     return [];
   }
   const stored = jsonGet("contacts", key);
   let names; try { names = stored ? JSON.parse(stored) : []; } catch { names = []; }
-  contactsCache.set(key, new Set(names));
+  cacheSet(contactsCache,key, new Set(names));
   return names;
 }
 
@@ -565,33 +596,76 @@ async function dbSaveDM(senderName, receiverName, msg) {
     try {
       const row = { id: msg.id, pair, sender: senderName.toLowerCase().trim(), sender_name: msg.fromName, text: msg.text, created_at: new Date(msg.ts).toISOString() };
       if (msg.encrypted) row.encrypted = true;
-      await supabase.from("direct_messages").insert(row);
+      if (msg.image) row.image = msg.image;
+      const { error } = await supabase.from("direct_messages").insert(row);
+      if (error && msg.image) {
+        // Retry without image in case the column doesn't exist yet
+        delete row.image;
+        await supabase.from("direct_messages").insert(row);
+      }
     } catch (e) { console.warn("DM write error:", e.message); }
     return;
   }
   const stored = jsonGet("direct_messages", pair);
   let msgs; try { msgs = stored ? JSON.parse(stored) : []; } catch { msgs = []; }
-  msgs.push({ id: msg.id, sender: senderName.toLowerCase().trim(), senderName: msg.fromName, text: msg.text, encrypted: msg.encrypted || false, ts: msg.ts });
+  msgs.push({ id: msg.id, sender: senderName.toLowerCase().trim(), senderName: msg.fromName, text: msg.text, image: msg.image || null, encrypted: msg.encrypted || false, ts: msg.ts });
   if (msgs.length > 100) msgs.splice(0, msgs.length - 100);
   jsonSet("direct_messages", pair, JSON.stringify(msgs));
 }
 
-async function dbLoadDMs(nameA, nameB, limit = 50) {
+async function dbLoadDMs(nameA, nameB, limit = 50, before = null) {
   const pair = [nameA, nameB].map(n => n.toLowerCase().trim()).sort().join(":");
   if (supabase) {
     try {
-      const { data } = await supabase.from("direct_messages")
+      let query = supabase.from("direct_messages")
         .select("*").eq("pair", pair)
         .order("created_at", { ascending: false }).limit(limit);
+      if (before) query = query.lt("created_at", new Date(before).toISOString());
+      const { data } = await query;
       if (data) return data.reverse().map(d => ({
-        id: d.id, sender: d.sender, senderName: d.sender_name, text: d.text, encrypted: d.encrypted || false, ts: new Date(d.created_at).getTime(),
+        id: d.id, sender: d.sender, senderName: d.sender_name, text: d.text, image: d.image || null, encrypted: d.encrypted || false, ts: new Date(d.created_at).getTime(),
       }));
     } catch (e) { console.warn("DM read error:", e.message); }
     return [];
   }
   const stored = jsonGet("direct_messages", pair);
   let msgs; try { msgs = stored ? JSON.parse(stored) : []; } catch { msgs = []; }
+  if (before) msgs = msgs.filter(m => m.ts < before);
   return msgs.slice(-limit);
+}
+
+// ─── DM read cursors ─────────────────────────────────────────────────────────
+
+const readCursorCache = new Map(); // "name:peer" -> timestamp
+
+async function dbSetReadCursor(name, peerName, readAt) {
+  const key = name + ":" + peerName;
+  const prev = readCursorCache.get(key) || 0;
+  if (readAt <= prev) return; // already up to date
+  cacheSet(readCursorCache, key, readAt);
+  if (supabase) {
+    try {
+      await supabase.from("dm_read_cursors").upsert({ name, peer_name: peerName, read_at: new Date(readAt).toISOString() });
+    } catch (e) { console.warn("Read cursor write error:", e.message); }
+    return;
+  }
+  jsonSet("dm_read_cursors", key, String(readAt));
+}
+
+async function dbGetReadCursor(name, peerName) {
+  const key = name + ":" + peerName;
+  if (readCursorCache.has(key)) return readCursorCache.get(key);
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("dm_read_cursors").select("read_at").eq("name", name).eq("peer_name", peerName).single();
+      if (data) { const ts = new Date(data.read_at).getTime(); readCursorCache.set(key, ts); return ts; }
+    } catch {}
+    return 0;
+  }
+  const stored = jsonGet("dm_read_cursors", key);
+  const ts = stored ? parseInt(stored, 10) : 0;
+  cacheSet(readCursorCache, key, ts);
+  return ts;
 }
 
 // ─── User profiles (bio + banner) ────────────────────────────────────────────
@@ -604,20 +678,20 @@ async function dbGetProfile(name) {
   if (supabase) {
     try {
       const { data } = await supabase.from("user_profiles").select("*").eq("name", key).single();
-      if (data) { const p = { bio: data.bio || null, banner: data.banner || null, customStatus: data.custom_status || null, e2eKey: data.e2e_key || null, appWallet: data.app_wallet || null, appWalletAddress: data.app_wallet_address || null }; profileCache.set(key, p); return p; }
+      if (data) { const p = { bio: data.bio || null, banner: data.banner || null, customStatus: data.custom_status || null, e2eKey: data.e2e_key || null, appWallet: data.app_wallet || null, appWalletAddress: data.app_wallet_address || null }; cacheSet(profileCache,key, p); return p; }
     } catch {}
     return { bio: null, banner: null, customStatus: null, e2eKey: null, appWallet: null, appWalletAddress: null };
   }
   const stored = jsonGet("user_profiles", key);
   const defaultProfile = { bio: null, banner: null, customStatus: null, e2eKey: null, appWallet: null, appWalletAddress: null };
   let p; try { p = stored ? { ...defaultProfile, ...JSON.parse(stored) } : { ...defaultProfile }; } catch { p = { ...defaultProfile }; }
-  profileCache.set(key, p);
+  cacheSet(profileCache,key, p);
   return p;
 }
 
 async function dbSetProfile(name, profile) {
   const key = name.toLowerCase().trim();
-  profileCache.set(key, profile);
+  cacheSet(profileCache,key, profile);
   if (supabase) {
     try {
       const row = { name: key, bio: profile.bio, banner: profile.banner, custom_status: profile.customStatus || null, updated_at: new Date().toISOString() };
@@ -1007,7 +1081,7 @@ async function claimWalletInbox(walletAddress, userName, socket) {
     try {
       // Find DM pairs that used the raw wallet address
       const { data: dms } = await supabase.from("direct_messages").select("id, pair, sender, sender_name, text, encrypted, created_at")
-        .like("pair", `%${addr.replace(/[%_\\]/g, "")}%`).order("created_at", { ascending: true });
+        .like("pair", `%${safeFilterKey(addr)}%`).order("created_at", { ascending: true });
       if (dms && dms.length > 0) {
         let claimed = 0;
         for (const dm of dms) {
@@ -1120,13 +1194,19 @@ async function dbGetSocialScore(name) {
   let totalPairCredits = 0;
   if (supabase) {
     try {
-      const { data } = await supabase.from("pair_meetings").select("credit_seconds").like("pair", `%${key.replace(/[%_\\]/g, "")}%`);
+      const safeKey = key.replace(/[%_\\]/g, "\\$&");
+      const [{ data: d1 }, { data: d2 }] = await Promise.all([
+        supabase.from("pair_meetings").select("credit_seconds").like("pair", `${safeKey}:%`),
+        supabase.from("pair_meetings").select("credit_seconds").like("pair", `%:${safeKey}`),
+      ]);
+      const data = [...(d1 || []), ...(d2 || [])];
       if (data) totalPairCredits = data.reduce((sum, r) => sum + (r.credit_seconds || 0), 0);
     } catch {}
   } else {
     const store = jsonStores["pair_meetings"] || {};
     for (const [pair, val] of Object.entries(store)) {
-      if (pair.includes(key)) { try { totalPairCredits += JSON.parse(val).creditSeconds || 0; } catch {} }
+      if (!pair.split(":").includes(key)) continue;
+      try { totalPairCredits += JSON.parse(val).creditSeconds || 0; } catch {}
     }
   }
   return { score: onlineSeconds + totalPairCredits, onlineSeconds, pairCredits: totalPairCredits, totalMeets: stats.totalMeets };
@@ -1366,6 +1446,42 @@ async function dbGetDirectory() {
   return Object.values(dir).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
 }
 
+async function dbGetDirectoryEntry(name) {
+  const key = name.toLowerCase().trim();
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("user_directory").select("x_username, wallet_address, display_name, avatar").eq("name", key).single();
+      if (data) return { xUsername: data.x_username || null, walletAddress: data.wallet_address || null, displayName: data.display_name || null, avatar: data.avatar || null };
+    } catch {}
+    return null;
+  }
+  const stored = jsonGet("user_directory", "_all");
+  try { const dir = stored ? JSON.parse(stored) : {}; return dir[key] || null; } catch { return null; }
+}
+
+async function countFollowers(name, xUsername) {
+  let followers = 0;
+  if (supabase) {
+    try {
+      const { count: c1 } = await supabase.from("contacts").select("owner", { count: "exact", head: true }).eq("contact_name", name);
+      followers = c1 || 0;
+      if (xUsername) {
+        const { count: c2 } = await supabase.from("contacts").select("owner", { count: "exact", head: true }).eq("contact_name", "@" + xUsername.toLowerCase());
+        followers += c2 || 0;
+      }
+    } catch {}
+  } else {
+    const store = jsonStores["contacts"] || {};
+    for (const val of Object.values(store)) {
+      try {
+        const contacts = JSON.parse(val);
+        if (contacts.includes(name) || (xUsername && contacts.includes("@" + xUsername.toLowerCase()))) followers++;
+      } catch {}
+    }
+  }
+  return followers;
+}
+
 const MAX_NAME_LENGTH = 30;
 const MAX_AVATAR_BYTES = 200_000; // ~200KB for a 128x128 JPEG
 
@@ -1374,6 +1490,7 @@ const MAX_AVATAR_BYTES = 200_000; // ~200KB for a 128x128 JPEG
 const onlineUsers = new Map();
 const activeCalls = new Map();
 const activeStreams = new Map(); // streamId -> { streamerId, streamerName, streamerAvatar, streamerXUsername, title, startedAt, viewers: Set<userId> }
+const privateRooms = new Map(); // roomId -> { creatorId, creatorName, createdAt, guestId?, guestName? }
 const takenNames = new Map();
 const disconnectTimers = new Map();
 
@@ -1389,42 +1506,49 @@ const streamChats = new Map(); // streamId -> [ messages ]
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
+// Throttled broadcast — coalesces rapid-fire calls (e.g. multiple users joining at once)
+let _broadcastPending = false;
 function broadcastUserList() {
-  const users = [];
-  const seenNames = new Set();
-  for (const [userId, data] of onlineUsers) {
-    if (!data.disconnectedAt && !seenNames.has(data.name.toLowerCase())) {
-      seenNames.add(data.name.toLowerCase());
-      // Check if user is streaming
-      let streaming = null;
-      for (const [streamId, s] of activeStreams) {
-        if (s.streamerId === userId) {
-          streaming = { streamId, title: s.title, viewerCount: s.viewers.size };
-          break;
+  if (_broadcastPending) return;
+  _broadcastPending = true;
+  setImmediate(() => {
+    _broadcastPending = false;
+    const users = [];
+    const seenNames = new Set();
+    for (const [userId, data] of onlineUsers) {
+      if (!data.disconnectedAt && !data.privateRoom && data.status !== "invisible" && !seenNames.has(data.name.toLowerCase())) {
+        seenNames.add(data.name.toLowerCase());
+        // Check if user is streaming
+        let streaming = null;
+        for (const [streamId, s] of activeStreams) {
+          if (s.streamerId === userId) {
+            streaming = { streamId, title: s.title, viewerCount: s.viewers.size };
+            break;
+          }
         }
-      }
-      // Check if user is in a call
-      let inCallWith = null;
-      for (const [, call] of activeCalls) {
-        if (call.startedAt && (call.callerId === userId || call.calleeId === userId)) {
-          const partnerId = call.callerId === userId ? call.calleeId : call.callerId;
-          const partner = onlineUsers.get(partnerId);
-          if (partner) inCallWith = { userId: partnerId, name: partner.name, avatar: partner.avatar || null };
-          break;
+        // Check if user is in a call
+        let inCallWith = null;
+        for (const [, call] of activeCalls) {
+          if (call.startedAt && (call.callerId === userId || call.calleeId === userId)) {
+            const partnerId = call.callerId === userId ? call.calleeId : call.callerId;
+            const partner = onlineUsers.get(partnerId);
+            if (partner) inCallWith = { userId: partnerId, name: partner.name, avatar: partner.avatar || null };
+            break;
+          }
         }
+        users.push({
+          userId, name: data.name, status: data.status,
+          avatar: data.avatar || null, stats: data.stats || null,
+          xUsername: data.xUsername || null, walletAddress: data.walletAddress || null, appWalletAddress: data.appWalletAddress || null,
+          customStatus: data.customStatus || null, publicKey: data.publicKey || null,
+          autoMeet: data.autoMeet || false,
+          streaming, inCallWith,
+        });
       }
-      users.push({
-        userId, name: data.name, status: data.status,
-        avatar: data.avatar || null, stats: data.stats || null,
-        xUsername: data.xUsername || null, walletAddress: data.walletAddress || null, appWalletAddress: data.appWalletAddress || null,
-        customStatus: data.customStatus || null, publicKey: data.publicKey || null,
-        autoMeet: data.autoMeet || false,
-        streaming, inCallWith,
-      });
     }
-  }
-  io.emit("user-list", users);
-  io.emit("online-count", users.length);
+    io.emit("user-list", users);
+    io.emit("online-count", users.length);
+  });
 }
 
 function getSocketByUserId(userId) {
@@ -1444,6 +1568,13 @@ function cleanupCall(callId) {
   if (callerData && calleeData) {
     const pairKey = [callerData.name, calleeData.name].map(n => n.toLowerCase().trim()).sort().join(":");
     autoMeetPending.delete(pairKey);
+  }
+  // Clean up private room state
+  if (call.privateRoom) {
+    privateRooms.delete(call.privateRoom);
+    if (callerData) delete callerData.privateRoom;
+    if (calleeData) delete calleeData.privateRoom;
+    broadcastUserList(); // Re-add users to online list
   }
   activeCalls.delete(callId);
 }
@@ -1557,13 +1688,34 @@ io.on("connection", (socket) => {
     const safeAvatar = (avatar && typeof avatar === "string" && avatar.length <= MAX_AVATAR_BYTES) ? avatar : null;
     let safeWallet = (walletAddress && typeof walletAddress === "string" && /^0x[0-9a-fA-F]{40}$/.test(walletAddress)) ? walletAddress.toLowerCase() : null;
 
+    // Verify X username: only trust it if the directory confirms this name owns it,
+    // or if there's an x_profile entry matching the claimed username.
+    // This prevents a malicious client from claiming any @handle on socket register.
+    let verifiedXUsername = null;
+    if (xUsername && typeof xUsername === "string") {
+      const safeX = xUsername.toLowerCase().trim();
+      // Check if x_profiles has this username (meaning they completed OAuth at some point)
+      const xp = await dbGetXProfile(safeX);
+      if (xp) {
+        // Verify the registering name matches what was stored during OAuth
+        const dirEntry = await dbGetDirectoryEntry(trimmedName);
+        if (dirEntry && dirEntry.xUsername && dirEntry.xUsername.toLowerCase() === safeX) {
+          verifiedXUsername = safeX;
+        } else if (!dirEntry || !dirEntry.xUsername) {
+          // Name not in directory yet or has no X link — allow if X profile exists (first login after OAuth)
+          verifiedXUsername = safeX;
+        }
+        // If dirEntry has a DIFFERENT xUsername, reject the claim (someone else owns this name)
+      }
+    }
+
     // Verify wallet signature if wallet is being used for first-time login (not reconnect)
     if (safeWallet && walletSignature && walletNonce) {
       if (!verifyWalletSignature(safeWallet, walletSignature, walletNonce)) {
         socket.emit("register-error", { message: "Wallet signature verification failed" });
         return;
       }
-    } else if (safeWallet && !reconnectUserId && !sessionToken && !xUsername) {
+    } else if (safeWallet && !reconnectUserId && !sessionToken && !verifiedXUsername) {
       // First-time wallet-only login without signature — reject
       // Skip if X-authenticated (X OAuth already verified identity)
       socket.emit("register-error", { message: "Wallet signature required" });
@@ -1604,7 +1756,7 @@ io.on("connection", (socket) => {
       let canReclaim = false;
       if (existingUser) {
         // Same X username → same person
-        if (xUsername && existingUser.xUsername && xUsername.toLowerCase() === existingUser.xUsername.toLowerCase()) canReclaim = true;
+        if (verifiedXUsername && existingUser.xUsername && verifiedXUsername.toLowerCase() === existingUser.xUsername.toLowerCase()) canReclaim = true;
         // Same wallet → same person
         if (safeWallet && existingUser.walletAddress && safeWallet === existingUser.walletAddress) canReclaim = true;
         // Existing user is disconnected (in grace period) and session token matches
@@ -1625,7 +1777,7 @@ io.on("connection", (socket) => {
     }
 
     // Check if name is permanently claimed by a verified user (survives server restart)
-    if (await isNameClaimed(trimmedName, xUsername, safeWallet)) {
+    if (await isNameClaimed(trimmedName, verifiedXUsername, safeWallet)) {
       socket.emit("register-error", { message: `"${trimmedName}" belongs to a verified account. Sign in with the original method.` });
       return;
     }
@@ -1647,7 +1799,7 @@ io.on("connection", (socket) => {
 
     // Guest session token: if this name has a stored token, verify it
     // Skip for X-authenticated or wallet-authenticated users
-    if (!xUsername && !safeWallet) {
+    if (!verifiedXUsername && !safeWallet) {
       const storedHash = await dbGetSessionToken(trimmedName);
       if (storedHash) {
         if (!sessionToken || hashToken(sessionToken) !== storedHash) {
@@ -1661,8 +1813,8 @@ io.on("connection", (socket) => {
     socket.userId = userId;
     let storedAvatar = await dbGetAvatar(trimmedName);
     // Fallback: try x_profiles for avatar if not in avatars table
-    if (!storedAvatar && xUsername) {
-      const xp = await dbGetXProfile(xUsername);
+    if (!storedAvatar && verifiedXUsername) {
+      const xp = await dbGetXProfile(verifiedXUsername);
       if (xp?.avatar) { storedAvatar = xp.avatar; await dbSetAvatar(trimmedName, storedAvatar); }
     }
     const resolvedAvatar = safeAvatar || storedAvatar || null;
@@ -1677,7 +1829,7 @@ io.on("connection", (socket) => {
     onlineUsers.set(userId, {
       socketId: socket.id, name: trimmedName, status: "online",
       avatar: resolvedAvatar, stats, disconnectedAt: null, connectedAt: Date.now(),
-      xUsername: xUsername || null, walletAddress: storedWallet || null,
+      xUsername: verifiedXUsername || null, walletAddress: storedWallet || null,
       customStatus: storedProfile.customStatus || null,
       publicKey: null, // loaded via register-pubkey
       autoMeet: prefs.autoMeet, cooldownHours: prefs.cooldownHours,
@@ -1689,16 +1841,16 @@ io.on("connection", (socket) => {
     takenNames.set(trimmedName.toLowerCase(), userId);
 
     // Issue session token for all users (needed for reconnection after server restart)
-    let newSessionToken = sessionToken || base64url(crypto.randomBytes(24));
+    // Always generate server-side — never reuse a client-supplied token
+    const newSessionToken = base64url(crypto.randomBytes(24));
     await dbSetSessionToken(trimmedName, hashToken(newSessionToken));
 
-    socket.emit("registered", { userId, name: trimmedName, reconnected: false, avatar: resolvedAvatar, stats, xUsername: xUsername || null, walletAddress: storedWallet || null, customStatus: storedProfile.customStatus || null, autoMeet: prefs.autoMeet, cooldownHours: prefs.cooldownHours, sessionToken: newSessionToken });
+    socket.emit("registered", { userId, name: trimmedName, reconnected: false, avatar: resolvedAvatar, stats, xUsername: verifiedXUsername || null, walletAddress: storedWallet || null, customStatus: storedProfile.customStatus || null, autoMeet: prefs.autoMeet, cooldownHours: prefs.cooldownHours, sessionToken: newSessionToken });
     broadcastUserList();
-    console.log(`✅ ${trimmedName}${xUsername ? " (@" + xUsername + ")" : ""}${storedWallet ? " [" + storedWallet.slice(0,6) + "...]" : ""} registered as ${userId}`);
+    console.log(`✅ ${trimmedName}${verifiedXUsername ? " (@" + verifiedXUsername + ")" : ""}${storedWallet ? " [" + storedWallet.slice(0,6) + "...]" : ""} registered as ${userId}`);
 
-    // Add verified users (X or wallet) to the directory
     // Add all users to directory (verified and guests)
-    dbAddToDirectory(trimmedName, { displayName: trimmedName, xUsername: xUsername || null, walletAddress: storedWallet || null, avatar: resolvedAvatar });
+    dbAddToDirectory(trimmedName, { displayName: trimmedName, xUsername: verifiedXUsername || null, walletAddress: storedWallet || null, avatar: resolvedAvatar });
 
     // Claim wallet inbox: migrate DMs sent to the raw wallet address to this user's name
     if (storedWallet) {
@@ -1719,8 +1871,23 @@ io.on("connection", (socket) => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
     // Update presence status
-    if (status === "online" || status === "idle") {
+    if (status === "online" || status === "idle" || status === "invisible") {
+      const prevStatus = userData.status;
       userData.status = status;
+      // Flush online time when leaving "online" status (no credit for idle/invisible)
+      if (prevStatus === "online" && status !== "online" && userData.connectedAt) {
+        const sessionMs = Date.now() - userData.connectedAt;
+        if (sessionMs > 0) {
+          const stats = await dbGetStats(userData.name);
+          stats.totalOnlineMs = (stats.totalOnlineMs || 0) + sessionMs;
+          await dbSetStats(userData.name, stats);
+        }
+        userData.connectedAt = null; // stop accumulating
+      }
+      // Resume tracking when returning to online
+      if (status === "online" && prevStatus !== "online") {
+        userData.connectedAt = Date.now();
+      }
     }
     // Update custom status text (persisted like bio)
     if (customStatus !== undefined) {
@@ -1871,6 +2038,7 @@ io.on("connection", (socket) => {
   // Stream WebRTC signaling
   socket.on("stream-offer", ({ streamId, viewerId, sdp }) => {
     const stream = activeStreams.get(streamId); if (!stream) return;
+    if (stream.streamerId !== socket.userId) return; // only streamer can send offers
     const vs = getSocketByUserId(viewerId);
     if (vs) vs.emit("stream-offer", { streamId, sdp });
   });
@@ -1971,65 +2139,81 @@ io.on("connection", (socket) => {
     if (!trimmed && !safeImage) return;
     const isEncrypted = !!encrypted;
 
+    // Resolve target: userId → online user, or name/wallet → resolved name
     let targetName = null;
-    let targetUserId = toUserId || null;
-
+    let targetUserId = null;
     if (toUserId && onlineUsers.has(toUserId)) {
-      // Online target by userId
       const target = onlineUsers.get(toUserId);
       targetName = target.name;
-      const msg = { id: uuidv4().slice(0, 10), fromUserId: userId, fromName: userData.name, fromAvatar: userData.avatar || null, text: trimmed, image: safeImage, encrypted: isEncrypted, ts: Date.now() };
-      if (!target.disconnectedAt) {
-        const ts = getSocketByUserId(toUserId);
-        if (ts) ts.emit("chat-dm", msg);
-      }
-      socket.emit("chat-dm-sent", { toUserId, toName: targetName, ...msg });
-      dbSaveDM(userData.name, targetName, msg);
-      // DM notification
-      const dmNotif = await dbCreateNotification(targetName, "dm", userData.name, null, isEncrypted ? "[encrypted message]" : trimmed);
-      emitNotification(targetName, dmNotif);
+      targetUserId = toUserId;
     } else if (toName && typeof toName === "string") {
-      // Offline target by name or wallet address
       targetName = toName.trim().slice(0, 60);
-      // If it's a wallet address, check if a registered user owns it
+      // Resolve wallet address to registered user
       if (/^0x[0-9a-f]{40}$/i.test(targetName)) {
         const owner = await dbGetWalletOwner(targetName.toLowerCase());
-        if (owner) {
-          // Resolve to registered user — check if they're online
-          const onlineOwner = [...onlineUsers.entries()].find(([, d]) => d.name.toLowerCase() === owner);
-          if (onlineOwner && !onlineOwner[1].disconnectedAt) {
-            const ts = getSocketByUserId(onlineOwner[0]);
-            const msg = { id: uuidv4().slice(0, 10), fromUserId: userId, fromName: userData.name, fromAvatar: userData.avatar || null, text: trimmed, image: safeImage, encrypted: isEncrypted, ts: Date.now() };
-            if (ts) ts.emit("chat-dm", msg);
-            socket.emit("chat-dm-sent", { toUserId: onlineOwner[0], toName: owner, ...msg });
-            dbSaveDM(userData.name, owner, msg);
-            const dmNotif = await dbCreateNotification(owner, "dm", userData.name, null, isEncrypted ? "[encrypted message]" : trimmed);
-            emitNotification(owner, dmNotif);
-            return;
-          }
-          targetName = owner; // use registered name for storage
-        }
+        if (owner) targetName = owner;
       }
-      const msg = { id: uuidv4().slice(0, 10), fromUserId: userId, fromName: userData.name, fromAvatar: userData.avatar || null, text: trimmed, image: safeImage, encrypted: isEncrypted, ts: Date.now() };
-      // Check if they happen to be online under a different lookup
-      const onlineTarget = [...onlineUsers.entries()].find(([, d]) => d.name.toLowerCase() === targetName.toLowerCase());
-      if (onlineTarget) {
-        const [tId, tData] = onlineTarget;
-        if (!tData.disconnectedAt) {
-          const ts = getSocketByUserId(tId);
-          if (ts) ts.emit("chat-dm", msg);
-        }
-        targetUserId = tId;
+      // Check if resolved target is online
+      const onlineTarget = [...onlineUsers.entries()].find(([, d]) => d.name.toLowerCase() === targetName.toLowerCase() && !d.disconnectedAt);
+      if (onlineTarget) targetUserId = onlineTarget[0];
+    }
+    if (!targetName) return;
+
+    // Build message, deliver, persist, notify
+    const msg = { id: uuidv4().slice(0, 10), fromUserId: userId, fromName: userData.name, fromAvatar: userData.avatar || null, text: trimmed, image: safeImage, encrypted: isEncrypted, ts: Date.now() };
+    if (targetUserId) {
+      const ts = getSocketByUserId(targetUserId);
+      if (ts) ts.emit("chat-dm", msg);
+    }
+    socket.emit("chat-dm-sent", { toUserId: targetUserId, toName: targetName, ...msg });
+    dbSaveDM(userData.name, targetName, msg);
+    const dmNotif = await dbCreateNotification(targetName, "dm", userData.name, null, isEncrypted ? "[encrypted message]" : trimmed);
+    emitNotification(targetName, dmNotif);
+    // Notify both sides to refresh conversation list
+    socket.emit("dm-conversations-update", { peerName: targetName, lastMessage: isEncrypted ? "[encrypted]" : trimmed.slice(0, 50), lastTime: msg.ts });
+    if (targetUserId) {
+      const ts = getSocketByUserId(targetUserId);
+      if (ts) ts.emit("dm-conversations-update", { peerName: userData.name, lastMessage: isEncrypted ? "[encrypted]" : trimmed.slice(0, 50), lastTime: msg.ts });
+    }
+  });
+
+  // DM typing indicator (relay only, no persistence)
+  socket.on("dm-typing", ({ toName }) => {
+    if (!rateLimit(socket, "dm-typing", 5, 5_000)) return;
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (!toName || typeof toName !== "string") return;
+    const targetKey = toName.toLowerCase().trim();
+    for (const [tId, tData] of onlineUsers) {
+      if (tData.name.toLowerCase() === targetKey && !tData.disconnectedAt) {
+        const ts = getSocketByUserId(tId);
+        if (ts) ts.emit("dm-typing", { fromName: userData.name });
+        break;
       }
-      socket.emit("chat-dm-sent", { toUserId: targetUserId, toName: targetName, ...msg });
-      dbSaveDM(userData.name, targetName, msg);
-      const dmNotif2 = await dbCreateNotification(targetName, "dm", userData.name, null, isEncrypted ? "[encrypted message]" : trimmed);
-      emitNotification(targetName, dmNotif2);
+    }
+  });
+
+  // DM read receipts
+  socket.on("dm-read", async ({ peerName, readAt }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    if (!peerName || typeof peerName !== "string" || typeof readAt !== "number") return;
+    const myName = userData.name.toLowerCase().trim();
+    const peerKey = peerName.toLowerCase().trim();
+    // Persist read cursor
+    await dbSetReadCursor(myName, peerKey, readAt);
+    // Relay to peer if online
+    for (const [tId, tData] of onlineUsers) {
+      if (tData.name.toLowerCase() === peerKey && !tData.disconnectedAt) {
+        const ts = getSocketByUserId(tId);
+        if (ts) ts.emit("dm-read-receipt", { fromName: myName, readAt });
+        break;
+      }
     }
   });
 
   // DM history
-  socket.on("dm-history", async ({ peerName }) => {
+  socket.on("dm-history", async ({ peerName, limit, before }) => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
     if (!peerName || typeof peerName !== "string") return;
@@ -2039,8 +2223,15 @@ io.on("connection", (socket) => {
       const owner = await dbGetWalletOwner(peerName.toLowerCase());
       if (owner) resolvedPeer = owner;
     }
-    const messages = await dbLoadDMs(userData.name, resolvedPeer);
-    socket.emit("dm-history", { peerName, messages });
+    const safeLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
+    const safeBefore = typeof before === "number" ? before : null;
+    const peerKey = resolvedPeer.toLowerCase().trim();
+    const myKey = userData.name.toLowerCase().trim();
+    const [messages, peerReadAt] = await Promise.all([
+      dbLoadDMs(myKey, peerKey, safeLimit, safeBefore),
+      safeBefore ? Promise.resolve(0) : dbGetReadCursor(peerKey, myKey), // only load on initial fetch
+    ]);
+    socket.emit("dm-history", { peerName, messages, hasMore: messages.length === safeLimit, peerReadAt: peerReadAt || 0 });
   });
 
   // ── Posts & Profiles ──────────────────────────────────────────────────────
@@ -2150,30 +2341,33 @@ io.on("connection", (socket) => {
     const result = await dbGetUserPosts(username, limit || 20, offset || 0);
     const userData = socket.userId ? onlineUsers.get(socket.userId) : null;
     const myNameLower = userData ? userData.name.toLowerCase() : "";
-    // Get author avatar once for all own posts (same author)
-    const authorAvatar = await dbGetAvatar(username) || null;
-    for (const post of result.posts) {
+    // Get author avatar + reposts in parallel with post enrichment
+    const [authorAvatar, reposts] = await Promise.all([
+      dbGetAvatar(username), dbGetUserReposts(username, limit || 20),
+    ]);
+    // Enrich own posts in parallel (likers + reposters per post)
+    await Promise.all(result.posts.map(async (post) => {
       post.authorName = username;
-      post.authorAvatar = authorAvatar;
-      const likers = await dbGetPostLikes(post.id);
+      post.authorAvatar = authorAvatar || null;
+      const [likers, reposters] = await Promise.all([dbGetPostLikes(post.id), dbGetPostReposters(post.id)]);
       post.likers = likers;
       post.liked = myNameLower ? likers.includes(myNameLower) : false;
-      const reposters = await dbGetPostReposters(post.id);
       post.reposters = reposters;
-    }
-    // Fetch reposts by this user and merge into the list
-    const reposts = await dbGetUserReposts(username, limit || 20);
-    const avatarCache = { [username.toLowerCase()]: authorAvatar };
-    for (const rp of reposts) {
-      if (!avatarCache[rp.author]) avatarCache[rp.author] = await dbGetAvatar(rp.author) || null;
+    }));
+    // Enrich reposts in parallel
+    const avatarCacheLocal = { [username.toLowerCase()]: authorAvatar || null };
+    // Pre-fetch unique repost author avatars in parallel
+    const uniqueAuthors = [...new Set(reposts.map(rp => rp.author).filter(a => !avatarCacheLocal[a]))];
+    const authorAvatars = await Promise.all(uniqueAuthors.map(a => dbGetAvatar(a)));
+    uniqueAuthors.forEach((a, i) => { avatarCacheLocal[a] = authorAvatars[i] || null; });
+    await Promise.all(reposts.map(async (rp) => {
       rp.authorName = rp.author;
-      rp.authorAvatar = avatarCache[rp.author];
-      const likers = await dbGetPostLikes(rp.id);
+      rp.authorAvatar = avatarCacheLocal[rp.author] || null;
+      const [likers, reposters] = await Promise.all([dbGetPostLikes(rp.id), dbGetPostReposters(rp.id)]);
       rp.likers = likers;
       rp.liked = myNameLower ? likers.includes(myNameLower) : false;
-      const reposters = await dbGetPostReposters(rp.id);
       rp.reposters = reposters;
-    }
+    }));
     // Merge and sort by time, dedup by post ID (own posts take priority over reposts)
     const ownIds = new Set(result.posts.map(p => p.id));
     const dedupedReposts = reposts.filter(rp => !ownIds.has(rp.id));
@@ -2235,12 +2429,13 @@ io.on("connection", (socket) => {
       const owner = await dbGetWalletOwner(key);
       if (owner) key = owner;
     }
-    const profile = await dbGetProfile(key);
-    const stats = await dbGetStats(key);
+    // Parallelize independent DB queries for faster profile loading
+    const [profile, stats, wallet, socialScore] = await Promise.all([
+      dbGetProfile(key), dbGetStats(key), dbGetWallet(key), dbGetSocialScore(key),
+    ]);
     let avatar = await dbGetAvatar(key);
-    const wallet = await dbGetWallet(key);
-    const { total: postCount } = await dbGetUserPosts(key, 0, 0);
-    // Find xUsername + avatar from online users, then directory, then x_profiles
+
+    // Find xUsername + avatar from online users (instant, in-memory)
     let xUsername = null;
     let displayName = username;
     for (const [, d] of onlineUsers) {
@@ -2251,72 +2446,33 @@ io.on("connection", (socket) => {
     }
     // Fallback: check directory for offline users
     if (!xUsername || !avatar) {
-      if (supabase) {
-        try {
-          const { data } = await supabase.from("user_directory").select("*").eq("name", key).single();
-          if (data) {
-            if (!xUsername) xUsername = data.x_username || null;
-            if (!avatar) avatar = data.avatar || null;
-            displayName = data.display_name || username;
-          }
-        } catch {}
-      } else {
-        const stored = jsonGet("user_directory", "_all");
-        try {
-          const dir = stored ? JSON.parse(stored) : {};
-          const entry = dir[key];
-          if (entry) {
-            if (!xUsername) xUsername = entry.xUsername || null;
-            if (!avatar) avatar = entry.avatar || null;
-            displayName = entry.displayName || username;
-          }
-        } catch {}
+      const dirEntry = await dbGetDirectoryEntry(key);
+      if (dirEntry) {
+        if (!xUsername) xUsername = dirEntry.xUsername || null;
+        if (!avatar && dirEntry.avatar) avatar = dirEntry.avatar;
+        if (dirEntry.displayName) displayName = dirEntry.displayName;
       }
     }
     // Final fallback: check x_profiles for avatar + xUsername
-    if (!xUsername) {
-      // Try to find xUsername by scanning x_profiles for this display name
-      if (supabase) {
-        try {
-          const { data } = await supabase.from("x_profiles").select("username, avatar").eq("display_name", displayName).single();
-          if (data) { xUsername = data.username; if (!avatar) avatar = data.avatar; }
-        } catch {}
-      }
+    if (!xUsername && supabase) {
+      try {
+        const { data } = await supabase.from("x_profiles").select("username, avatar").eq("display_name", displayName).single();
+        if (data) { xUsername = data.username; if (!avatar) avatar = data.avatar; }
+      } catch {}
     }
     if (!avatar && xUsername) {
       const xProfile = await dbGetXProfile(xUsername);
       if (xProfile?.avatar) { avatar = xProfile.avatar; dbSetAvatar(key, avatar); }
     }
-    const socialScore = await dbGetSocialScore(key);
-    // Include pair meeting info if viewer has a relationship with this user
+
+    // Parallelize pair info + follower count (both depend on xUsername being resolved)
     const viewerData = socket.userId ? onlineUsers.get(socket.userId) : null;
-    let pairInfo = null;
-    if (viewerData && viewerData.name.toLowerCase() !== key) {
-      pairInfo = await dbGetPairMeetings(viewerData.name, key);
-    }
-    // Count followers (how many users have saved this person as a contact)
-    let followers = 0;
-    if (supabase) {
-      try {
-        const xKey = xUsername ? "@" + xUsername.toLowerCase() : null;
-        let query = supabase.from("contacts").select("owner", { count: "exact", head: true }).eq("contact_name", key);
-        const { count: c1 } = await query;
-        followers = c1 || 0;
-        if (xKey) {
-          const { count: c2 } = await supabase.from("contacts").select("owner", { count: "exact", head: true }).eq("contact_name", xKey);
-          followers += c2 || 0;
-        }
-      } catch {}
-    } else {
-      const store = jsonStores["contacts"] || {};
-      for (const val of Object.values(store)) {
-        try {
-          const contacts = JSON.parse(val);
-          if (contacts.includes(key) || (xUsername && contacts.includes("@" + xUsername.toLowerCase()))) followers++;
-        } catch {}
-      }
-    }
-    socket.emit("profile", { username: key, displayName, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, appWalletAddress: profile.appWalletAddress || null, stats, postCount, followers, customStatus: profile.customStatus || null, socialScore, pairInfo });
+    const [pairInfo, followers] = await Promise.all([
+      (viewerData && viewerData.name.toLowerCase() !== key) ? dbGetPairMeetings(viewerData.name, key) : null,
+      countFollowers(key, xUsername),
+    ]);
+
+    socket.emit("profile", { username: key, displayName, bio: profile.bio, banner: profile.banner, avatar, xUsername, walletAddress: wallet, appWalletAddress: profile.appWalletAddress || null, stats, postCount: 0, followers, customStatus: profile.customStatus || null, socialScore, pairInfo });
   });
 
   socket.on("update-profile", async ({ bio, banner }) => {
@@ -2339,11 +2495,16 @@ io.on("connection", (socket) => {
   socket.on("get-my-pairs", async () => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
-    const key = userData.name.toLowerCase().trim().replace(/[%_\\]/g, "");
+    const key = userData.name.toLowerCase().trim();
     const pairs = {};
     if (supabase) {
       try {
-        const { data } = await supabase.from("pair_meetings").select("pair, meet_count, credit_seconds").like("pair", `%${key}%`);
+        const safeKey = key.replace(/[%_\\]/g, "\\$&");
+        const [{ data: d1 }, { data: d2 }] = await Promise.all([
+          supabase.from("pair_meetings").select("pair, meet_count, credit_seconds").like("pair", `${safeKey}:%`),
+          supabase.from("pair_meetings").select("pair, meet_count, credit_seconds").like("pair", `%:${safeKey}`),
+        ]);
+        const data = [...(d1 || []), ...(d2 || [])];
         if (data) for (const r of data) {
           const parts = r.pair.split(":");
           const peer = parts.find(p => p !== key) || parts[0];
@@ -2353,10 +2514,10 @@ io.on("connection", (socket) => {
     } else {
       const store = jsonStores["pair_meetings"] || {};
       for (const [pair, val] of Object.entries(store)) {
-        if (!pair.includes(key)) continue;
+        const parts = pair.split(":");
+        if (!parts.includes(key)) continue;
         try {
           const pm = JSON.parse(val);
-          const parts = pair.split(":");
           const peer = parts.find(p => p !== key) || parts[0];
           pairs[peer] = { meetCount: pm.meetCount || 0, creditSeconds: pm.creditSeconds || 0 };
         } catch {}
@@ -2390,10 +2551,14 @@ io.on("connection", (socket) => {
     ]);
     // Pair meetings
     const pairs = {};
-    const safeKey = key.replace(/[%_\\]/g, "");
+    const safeKey = key.replace(/[%_\\]/g, "\\$&");
     if (supabase) {
       try {
-        const { data } = await supabase.from("pair_meetings").select("pair, meet_count, credit_seconds").like("pair", `%${safeKey}%`);
+        const [{ data: d1 }, { data: d2 }] = await Promise.all([
+          supabase.from("pair_meetings").select("pair, meet_count, credit_seconds").like("pair", `${safeKey}:%`),
+          supabase.from("pair_meetings").select("pair, meet_count, credit_seconds").like("pair", `%:${safeKey}`),
+        ]);
+        const data = [...(d1 || []), ...(d2 || [])];
         if (data) for (const r of data) {
           const parts = r.pair.split(":");
           const peer = parts.find(p => p !== key) || parts[0];
@@ -2403,10 +2568,10 @@ io.on("connection", (socket) => {
     } else {
       const store = jsonStores["pair_meetings"] || {};
       for (const [pair, val] of Object.entries(store)) {
-        if (!pair.includes(key)) continue;
+        const parts = pair.split(":");
+        if (!parts.includes(key)) continue;
         try {
           const pm = JSON.parse(val);
-          const parts = pair.split(":");
           const peer = parts.find(p => p !== key) || parts[0];
           pairs[peer] = { meetCount: pm.meetCount || 0, creditSeconds: pm.creditSeconds || 0 };
         } catch {}
@@ -2497,6 +2662,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("get-pubkey", async ({ peerName }) => {
+    if (!socket.userId || !onlineUsers.has(socket.userId)) return;
     if (!peerName) return;
     const key = peerName.toLowerCase().trim();
     // Check online users first
@@ -2524,11 +2690,12 @@ io.on("connection", (socket) => {
     emitNotification(target.name, notif);
   });
 
-  // Call request for offline users (by name)
+  // Tip notification (unverified — no on-chain check)
   socket.on("tip-sent", async ({ toName, amount, txHash }) => {
+    if (!rateLimit(socket, "tip", 3, 60_000)) return; // 3 tips per minute
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
-    if (!toName || !amount || !txHash) return;
+    if (!toName || !amount || !txHash || typeof txHash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) return;
     const preview = `${amount} ETH`;
     const notif = await dbCreateNotification(toName, "tip", userData.name, null, preview);
     emitNotification(toName, notif);
@@ -2564,7 +2731,7 @@ io.on("connection", (socket) => {
     const call = activeCalls.get(callId); if (!call) return;
     const otherId = call.callerId === userId ? call.calleeId : call.callerId;
     const otherData = onlineUsers.get(otherId);
-    const tipMsg = { type: "tip", sender: userData.name, avatar: userData.avatar || null, amount, message: (message || "").slice(0, 100) };
+    const tipMsg = { type: "tip", sender: userData.name, avatar: userData.avatar || null, amount, message: (message || "").slice(0, 100), txHash };
     const os = getSocketByUserId(otherId);
     if (os) os.emit("call-tip-event", { callId, ...tipMsg });
     // Echo to sender
@@ -2642,30 +2809,46 @@ io.on("connection", (socket) => {
     clearTimeout(call.ringTimerId); call.startedAt = Date.now();
     const callee = onlineUsers.get(call.calleeId);
     const caller = onlineUsers.get(call.callerId);
-    if (callee) { await recordCallOutcome(callee.name, "accepted"); await refreshUserStats(call.calleeId); }
-    // Also count for the caller
-    if (caller) { const cs = await dbGetStats(caller.name); cs.totalMeets++; await dbSetStats(caller.name, cs); await refreshUserStats(call.callerId); }
-    if (caller && callee) await dbSetLastCall(caller.name, callee.name);
+    const isPrivate = !!call.privateRoom;
+
+    if (isPrivate) {
+      // Private calls: only increment totalMeets (no received/accepted/streak — minimizes DB footprint)
+      if (callee) { const cs = await dbGetStats(callee.name); cs.totalMeets++; await dbSetStats(callee.name, cs); await refreshUserStats(call.calleeId); }
+      if (caller) { const cs = await dbGetStats(caller.name); cs.totalMeets++; await dbSetStats(caller.name, cs); await refreshUserStats(call.callerId); }
+    } else {
+      // Normal calls: full stats recording
+      if (callee) { await recordCallOutcome(callee.name, "accepted"); await refreshUserStats(call.calleeId); }
+      if (caller) { const cs = await dbGetStats(caller.name); cs.totalMeets++; await dbSetStats(caller.name, cs); await refreshUserStats(call.callerId); }
+      if (caller && callee) await dbSetLastCall(caller.name, callee.name);
+    }
+
     call.timerId = setTimeout(async () => {
-      // Award 30 seconds credit to both users for completing the meeting
       const callerData = onlineUsers.get(call.callerId);
       const calleeData = onlineUsers.get(call.calleeId);
-      if (callerData) { const cs = await dbGetStats(callerData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(callerData.name, cs); }
-      if (calleeData) { const cs = await dbGetStats(calleeData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(calleeData.name, cs); }
-      // Record pair meeting
-      if (callerData && calleeData) dbRecordPairMeeting(callerData.name, calleeData.name);
+      if (!isPrivate) {
+        // Award 30 seconds credit to both users for completing the meeting
+        if (callerData) { const cs = await dbGetStats(callerData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(callerData.name, cs); }
+        if (calleeData) { const cs = await dbGetStats(calleeData.name); cs.creditSeconds = (cs.creditSeconds || 0) + 30; await dbSetStats(calleeData.name, cs); }
+        // Record pair meeting (earns pair credit)
+        if (callerData && calleeData) dbRecordPairMeeting(callerData.name, calleeData.name);
+      }
+      // Private calls: NO pair meeting record — no trace of who met whom
       const s1 = getSocketByUserId(call.callerId); const s2 = getSocketByUserId(call.calleeId);
-      if (s1) s1.emit("call-timeout", { callId, creditEarned: 30 }); if (s2) s2.emit("call-timeout", { callId, creditEarned: 30 });
+      const earned = isPrivate ? 0 : 30;
+      if (s1) s1.emit("call-timeout", { callId, creditEarned: earned }); if (s2) s2.emit("call-timeout", { callId, creditEarned: earned });
       cleanupCall(callId);
     }, CALL_DURATION_MS);
-    const s1 = getSocketByUserId(call.callerId); if (s1) s1.emit("call-accepted", { callId });
+    // Notify both participants (avoid duplicates)
+    const s1 = getSocketByUserId(call.callerId); if (s1 && s1.id !== socket.id) s1.emit("call-accepted", { callId });
+    const s2a = getSocketByUserId(call.calleeId); if (s2a && s2a.id !== socket.id) s2a.emit("call-accepted", { callId });
     socket.emit("call-accepted", { callId });
   });
 
   socket.on("decline-call", async ({ callId }) => {
     const call = activeCalls.get(callId); if (!call) return;
     const callee = onlineUsers.get(call.calleeId);
-    if (callee) { await recordCallOutcome(callee.name, "declined"); await refreshUserStats(call.calleeId); }
+    // Skip stats for private calls (no DB footprint)
+    if (callee && !call.privateRoom) { await recordCallOutcome(callee.name, "declined"); await refreshUserStats(call.calleeId); }
     const s = getSocketByUserId(call.callerId); if (s) s.emit("call-declined", { callId });
     cleanupCall(callId);
   });
@@ -2674,6 +2857,7 @@ io.on("connection", (socket) => {
     if (!rateLimit(socket, "extend", 2, 5_000)) return; // max 2 extends per 5s
     const userId = socket.userId; if (!userId) return;
     const call = activeCalls.get(callId); if (!call || !call.startedAt) return;
+    if (call.privateRoom) { socket.emit("extend-error", { message: "Private calls cannot be extended" }); return; }
     const userData = onlineUsers.get(userId); if (!userData) return;
     const secs = Math.min(Math.max(parseInt(seconds) || 30, 10), 300); // 10-300 seconds
     // Find the other user in this call
@@ -2720,12 +2904,73 @@ io.on("connection", (socket) => {
     cleanupCall(callId);
   });
 
-  socket.on("webrtc-offer", ({ callId, sdp }) => { const c = activeCalls.get(callId); if (!c) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("webrtc-offer", { callId, sdp }); });
-  socket.on("webrtc-answer", ({ callId, sdp }) => { const c = activeCalls.get(callId); if (!c) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("webrtc-answer", { callId, sdp }); });
-  socket.on("webrtc-ice-candidate", ({ callId, candidate }) => { const c = activeCalls.get(callId); if (!c) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("webrtc-ice-candidate", { callId, candidate }); });
+  socket.on("webrtc-offer", ({ callId, sdp }) => { const c = activeCalls.get(callId); if (!c) return; if (c.callerId !== socket.userId && c.calleeId !== socket.userId) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("webrtc-offer", { callId, sdp }); });
+  socket.on("webrtc-answer", ({ callId, sdp }) => { const c = activeCalls.get(callId); if (!c) return; if (c.callerId !== socket.userId && c.calleeId !== socket.userId) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("webrtc-answer", { callId, sdp }); });
+  socket.on("webrtc-ice-candidate", ({ callId, candidate }) => { const c = activeCalls.get(callId); if (!c) return; if (c.callerId !== socket.userId && c.calleeId !== socket.userId) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("webrtc-ice-candidate", { callId, candidate }); });
 
   // Video toggle relay
-  socket.on("video-toggle", ({ callId, videoOff }) => { const c = activeCalls.get(callId); if (!c) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("video-toggle", { callId, videoOff }); });
+  socket.on("video-toggle", ({ callId, videoOff }) => { const c = activeCalls.get(callId); if (!c) return; if (c.callerId !== socket.userId && c.calleeId !== socket.userId) return; const t = c.callerId === socket.userId ? c.calleeId : c.callerId; const s = getSocketByUserId(t); if (s) s.emit("video-toggle", { callId, videoOff }); });
+
+  // ── Private Rooms ──────────────────────────────────────────────────────
+  socket.on("create-private-room", () => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const roomId = crypto.randomBytes(16).toString("hex"); // 32-char hex
+    privateRooms.set(roomId, { creatorId: userId, creatorName: userData.name, createdAt: Date.now() });
+    socket.emit("private-room-created", { roomId });
+    console.log(`🔒 Private room ${roomId} created by ${userData.name}`);
+  });
+
+  socket.on("join-private-room", async ({ roomId, name, avatar }) => {
+    if (!roomId || !privateRooms.has(roomId)) { socket.emit("private-room-error", { message: "Room not found or expired" }); return; }
+    const room = privateRooms.get(roomId);
+    const userId = socket.userId;
+    if (!userId) { socket.emit("private-room-error", { message: "Please register first" }); return; }
+    const userData = onlineUsers.get(userId);
+    if (!userData) { socket.emit("private-room-error", { message: "Not connected" }); return; }
+
+    // Mark user as in a private room (hides from online list, skips online-time/credit accrual)
+    userData.privateRoom = roomId;
+
+    if (userId === room.creatorId) {
+      // Creator joining their own room — just wait
+      socket.emit("private-room-waiting", { roomId, role: "creator" });
+      return;
+    }
+
+    // Guest joining — store and notify both
+    room.guestId = userId;
+    room.guestName = userData.name;
+
+    // Mark creator as private too (in case they weren't already)
+    const creatorData = onlineUsers.get(room.creatorId);
+    if (creatorData) creatorData.privateRoom = roomId;
+
+    // Auto-initiate call between creator and guest
+    const callId = uuidv4().slice(0, 12);
+    const ringTimerId = setTimeout(() => {
+      const call = activeCalls.get(callId);
+      if (call && !call.startedAt) {
+        const s1 = getSocketByUserId(room.creatorId); if (s1) s1.emit("call-not-answered", { callId });
+        socket.emit("call-not-answered", { callId });
+        cleanupCall(callId);
+      }
+    }, RING_TIMEOUT_MS);
+
+    activeCalls.set(callId, { callerId: room.creatorId, calleeId: userId, startedAt: null, timerId: null, ringTimerId, privateRoom: roomId });
+
+    // Notify creator of incoming guest
+    const creatorSocket = getSocketByUserId(room.creatorId);
+    if (creatorSocket) {
+      creatorSocket.emit("private-room-guest-joined", { roomId, callId, guestId: userId, guestName: userData.name, guestAvatar: userData.avatar || null });
+      creatorSocket.emit("incoming-call", { callId, callerId: userId, callerName: userData.name, callerAvatar: userData.avatar || null, privateRoom: true });
+    }
+    // Tell guest to wait for accept
+    socket.emit("private-room-calling", { roomId, callId, creatorId: room.creatorId, creatorName: room.creatorName, creatorAvatar: creatorData?.avatar || null });
+
+    // Remove from broadcast since they're private
+    broadcastUserList();
+  });
 
   socket.on("disconnect", () => {
     const userId = socket.userId; if (!userId) return;
@@ -2757,12 +3002,22 @@ io.on("connection", (socket) => {
           cleanupCall(callId);
         }
       }
-      // Flush accumulated online time
-      if (userData.connectedAt) {
+      // Flush accumulated online time (only for "online" status, skip private rooms)
+      if (userData.connectedAt && userData.status === "online" && !userData.privateRoom) {
         const sessionMs = Date.now() - userData.connectedAt;
         const stats = await dbGetStats(userData.name);
         stats.totalOnlineMs = (stats.totalOnlineMs || 0) + sessionMs;
         await dbSetStats(userData.name, stats);
+      }
+      // Clean up private room if this user was in one
+      if (userData.privateRoom) {
+        const room = privateRooms.get(userData.privateRoom);
+        if (room) {
+          // Notify other participant
+          const otherId = room.creatorId === userId ? room.guestId : room.creatorId;
+          if (otherId) { const os = getSocketByUserId(otherId); if (os) os.emit("private-room-ended", { roomId: userData.privateRoom }); }
+          privateRooms.delete(userData.privateRoom);
+        }
       }
       takenNames.delete(userData.name.toLowerCase());
       onlineUsers.delete(userId); disconnectTimers.delete(userId);
@@ -2832,21 +3087,30 @@ app.get("/api/stats", async (req, res) => {
     const postsStored = jsonGet("posts", "_all");
     try { const posts = postsStored ? JSON.parse(postsStored) : []; totalPosts = posts.filter(p => !p.parentId).length; } catch {}
   }
-  res.json({ totalVisitors: totalVisitors, onlineUsers: onlineUsers.size, registeredUsers: dirSize, totalMeets, totalPosts });
+  const visitors = await dbGetCounter("total_visitors");
+  res.json({ totalVisitors: visitors, onlineUsers: onlineUsers.size, registeredUsers: dirSize, totalMeets, totalPosts });
 });
 
 // ─── DM conversations list ────────────────────────────────────────────────────
 
 app.get("/api/dm-conversations", async (req, res) => {
-  const name = (req.query.name || "").toLowerCase().trim().replace(/[%_\\]/g, ""); // sanitize LIKE wildcards
+  const name = (req.query.name || "").toLowerCase().trim();
   if (!name || name.length < 2) return res.json([]);
+  // Auth: require a valid session token matching the requested name
+  const token = req.query.token || req.headers["x-session-token"];
+  if (!token) return res.status(401).json({ error: "Authentication required" });
+  const storedHash = await dbGetSessionToken(name);
+  if (!storedHash || hashToken(token) !== storedHash) return res.status(403).json({ error: "Invalid session" });
   if (supabase) {
     try {
-      const { data } = await supabase.from("direct_messages")
-        .select("pair, text, encrypted, created_at")
-        .like("pair", `%${name}%`)
-        .order("created_at", { ascending: false })
-        .limit(100);
+      // Use parameterized .like() queries instead of .or() with string interpolation
+      // to avoid PostgREST filter injection via special chars in names
+      const safeName = name.replace(/[%_\\]/g, "\\$&"); // escape LIKE wildcards only
+      const [{ data: d1 }, { data: d2 }] = await Promise.all([
+        supabase.from("direct_messages").select("pair, text, encrypted, created_at").like("pair", `${safeName}:%`).order("created_at", { ascending: false }).limit(100),
+        supabase.from("direct_messages").select("pair, text, encrypted, created_at").like("pair", `%:${safeName}`).order("created_at", { ascending: false }).limit(100),
+      ]);
+      const data = [...(d1 || []), ...(d2 || [])];
       if (data) {
         // Group by pair, take latest message per conversation
         const convos = new Map();
@@ -2864,12 +3128,12 @@ app.get("/api/dm-conversations", async (req, res) => {
     const store = jsonStores["direct_messages"] || {};
     const convos = [];
     for (const [pair, val] of Object.entries(store)) {
-      if (!pair.includes(name)) continue;
+      const parts = pair.split(":");
+      if (!parts.includes(name)) continue;
       try {
         const msgs = JSON.parse(val);
         if (msgs.length === 0) continue;
         const last = msgs[msgs.length - 1];
-        const parts = pair.split(":");
         const peerName = parts.find(p => p !== name) || parts[0];
         convos.push({ peerName, lastMessage: last.encrypted ? "[encrypted]" : (last.text || "").slice(0, 50), lastTime: last.ts });
       } catch {}
@@ -2885,6 +3149,10 @@ const OG_IMAGE = "https://minimeet.cc/og-image.png";
 const SITE_NAME = "minimeet.cc";
 const SITE_DESC = "minute meetings and socials";
 
+function escOgHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#39;");
+}
+
 app.get("/", async (req, res, next) => {
   const ua = (req.headers["user-agent"] || "").toLowerCase();
   const isCrawler = /bot|crawl|spider|preview|slack|discord|telegram|whatsapp|twitter|facebook|linkedin|og-image/i.test(ua);
@@ -2896,40 +3164,42 @@ app.get("/", async (req, res, next) => {
   let url = `https://${SITE_NAME}/`;
 
   if (profile) {
-    const name = decodeURIComponent(profile);
+    const name = decodeURIComponent(profile).replace(/[<>"'&]/g, "").slice(0, 60);
     title = `${name} on ${SITE_NAME}`;
     description = `View ${name}'s profile on ${SITE_NAME} — ${SITE_DESC}`;
     url += `?profile=${encodeURIComponent(name)}`;
   } else if (call) {
-    const name = decodeURIComponent(call);
+    const name = decodeURIComponent(call).replace(/[<>"'&]/g, "").slice(0, 60);
     title = `Call ${name} on ${SITE_NAME}`;
     description = `Join a 1-minute video call with ${name} on ${SITE_NAME}`;
     url += `?call=${encodeURIComponent(name)}`;
   } else if (stream) {
     title = `Live stream on ${SITE_NAME}`;
     description = `Watch a live stream on ${SITE_NAME} — ${SITE_DESC}`;
-    url += `?stream=${encodeURIComponent(stream)}`;
+    url += `?stream=${encodeURIComponent(String(stream).slice(0, 60))}`;
   }
 
   // Read the HTML and inject meta tags
   const htmlPath = path.join(__dirname, "public", "index.html");
   let html = fs.readFileSync(htmlPath, "utf-8");
+  const safeTitle = escOgHtml(title);
+  const safeDesc = escOgHtml(description);
+  const safeUrl = escOgHtml(url);
   const metaTags = `
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="${SITE_NAME}" />
-    <meta property="og:title" content="${title}" />
-    <meta property="og:description" content="${description}" />
-    <meta property="og:url" content="${url}" />
+    <meta property="og:title" content="${safeTitle}" />
+    <meta property="og:description" content="${safeDesc}" />
+    <meta property="og:url" content="${safeUrl}" />
     <meta property="og:image" content="${OG_IMAGE}" />
     <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="${title}" />
-    <meta name="twitter:description" content="${description}" />
+    <meta name="twitter:title" content="${safeTitle}" />
+    <meta name="twitter:description" content="${safeDesc}" />
     <meta name="twitter:image" content="${OG_IMAGE}" />
-    <meta name="description" content="${description}" />
+    <meta name="description" content="${safeDesc}" />
   `;
   html = html.replace("</head>", metaTags + "</head>");
-  // Also update the <title>
-  html = html.replace("<title>minimeet.cc</title>", `<title>${title}</title>`);
+  html = html.replace("<title>minimeet.cc</title>", `<title>${safeTitle}</title>`);
   res.send(html);
 });
 
@@ -2947,7 +3217,7 @@ setInterval(async () => {
   // Collect online users with autoMeet enabled who are not in a call
   const candidates = [];
   for (const [userId, data] of onlineUsers) {
-    if (data.autoMeet && !data.disconnectedAt && !isUserInCall(userId) && !isUserStreaming(userId)) {
+    if (data.autoMeet && !data.disconnectedAt && !data.privateRoom && data.status === "online" && !isUserInCall(userId) && !isUserStreaming(userId)) {
       candidates.push({ userId, name: data.name, cooldownHours: data.cooldownHours || DEFAULT_COOLDOWN_HOURS });
     }
   }
@@ -3023,5 +3293,6 @@ server.listen(PORT, async () => {
     }
   }
   publicChat.push(...savedMsgs);
+  while (publicChat.length > MAX_CHAT_HISTORY) publicChat.shift();
   console.log(`\n  📞 minimeet.cc on http://localhost:${PORT} | DB: ${supabase ? "Supabase" : "JSON"} | X OAuth: ${X_CLIENT_ID ? "✅" : "❌"} | Chat: ${savedMsgs.length} msgs loaded\n`);
 });
