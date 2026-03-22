@@ -2288,8 +2288,9 @@
   </div>
 
   <!-- ══════════════ PRIVATE ROOM ══════════════ -->
-  <div id="private-room-screen">
-    <div class="private-room-card">
+  <div id="private-room-screen" onclick="if(event.target===this)closePrivateRoom()">
+    <div class="private-room-card" style="position:relative">
+      <button onclick="closePrivateRoom()" style="position:absolute;top:12px;right:12px;background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer;padding:4px 8px;line-height:1;opacity:0.5;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.5'">&times;</button>
       <div class="private-room-title" id="private-room-title">Private Room</div>
       <div class="private-room-sub" id="private-room-sub">Share this link to invite someone to a private call.</div>
       <div class="private-room-link" id="private-room-link" onclick="copyPrivateLink()" title="Click to copy"></div>
@@ -7317,6 +7318,10 @@ function showPrivateRoomScreen(role) {
     loginForm.style.display = myUserId ? "none" : "";
   }
 }
+window.closePrivateRoom = function() {
+  document.getElementById("private-room-screen").classList.remove("active");
+  privateRoomId = null;
+};
 window.createPrivateRoom = function() { if (socket) socket.emit("create-private-room"); };
 window.copyPrivateLink = function() {
   const t = document.getElementById("private-room-link")?.textContent;
