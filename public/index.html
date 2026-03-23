@@ -465,9 +465,10 @@
       max-width: 100%;
     }
     .post-image img {
-      width: 100%; max-height: 300px; object-fit: cover;
+      max-width: 100%; max-height: 400px; object-fit: contain;
       cursor: pointer; display: block;
       border-radius: 10px; border: 1px solid var(--border);
+      background: rgba(0,0,0,0.2);
     }
     .post-actions {
       display: flex; gap: 20px; font-size: 12px; color: var(--text-muted);
