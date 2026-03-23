@@ -4133,8 +4133,11 @@ function pokeUser(userId, e) {
 
 // ── Timer ────────────────────────────────────────────────────────────────
 
-function startTimer() {
-  timeLeft = CALL_DURATION;
+let callDurationTotal = CALL_DURATION; // tracks current call's total duration (may be > 60 for prepaid)
+
+function startTimer(durationSeconds) {
+  callDurationTotal = durationSeconds || CALL_DURATION;
+  timeLeft = callDurationTotal;
   $("#timer-wrap").style.display = "flex";
   updateTimerUI();
   callTimer = setInterval(() => {
@@ -4147,7 +4150,7 @@ function startTimer() {
 
 function updateTimerUI() {
   const circ = 2 * Math.PI * 54;
-  const offset = circ * (1 - timeLeft / CALL_DURATION);
+  const offset = circ * (1 - timeLeft / callDurationTotal);
   const color = timeLeft <= 10 ? "#E8453C" : timeLeft <= 20 ? "#E8A83C" : "#4ADE80";
   $("#timer-ring").setAttribute("stroke-dashoffset", offset);
   $("#timer-ring").setAttribute("stroke", color);
@@ -4642,14 +4645,49 @@ function setupEndedUI(name, avatar, reason, duration, creditEarned) {
 async function callUser(userId, name, avatar) {
   currentRemote = { userId, name, avatar: avatar || null };
   isCaller = true;
-  // Clear call-link state
   if (callTarget) { localStorage.removeItem("om_callTarget"); callTarget = null; }
   $("#call-link-banner").classList.remove("active");
-  setupCallUI(name, avatar, "Calling...");
+
+  // Check pair credits — offer prepay if available (not for private rooms)
+  const pairData = myPairData[name?.toLowerCase()];
+  const pairCredit = pairData?.creditSeconds || 0;
+
+  if (pairCredit >= 30 && !privateRoomId && !privateRoomRole) {
+    // Show quick prepay picker
+    const existing = document.getElementById("prepay-overlay");
+    if (existing) existing.remove();
+    const overlay = document.createElement("div");
+    overlay.id = "prepay-overlay";
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:250;display:flex;align-items:center;justify-content:center;";
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); startCall(userId, 0); } };
+    const mins = Math.floor(pairCredit / 60);
+    const card = document.createElement("div");
+    card.style.cssText = "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;width:280px;max-width:90vw;text-align:center;";
+    card.innerHTML = `
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Call ${escapeHtml(name)}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:14px;">${pairCredit}s credit available</div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <button onclick="document.getElementById('prepay-overlay').remove();startCall('${userId}',0)" style="padding:10px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;font-size:13px;font-family:var(--font-body);">1 min <span style="color:var(--text-muted);font-size:11px;">free</span></button>
+        ${pairCredit >= 60 ? `<button onclick="document.getElementById('prepay-overlay').remove();startCall('${userId}',60)" style="padding:10px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;font-size:13px;font-family:var(--font-body);">2 min <span style="color:var(--text-muted);font-size:11px;">+60s credit</span></button>` : ""}
+        ${pairCredit >= 240 ? `<button onclick="document.getElementById('prepay-overlay').remove();startCall('${userId}',240)" style="padding:10px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;font-size:13px;font-family:var(--font-body);">5 min <span style="color:var(--text-muted);font-size:11px;">+240s credit</span></button>` : ""}
+        ${mins >= 10 ? `<button onclick="document.getElementById('prepay-overlay').remove();startCall('${userId}',${pairCredit})" style="padding:10px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;font-size:13px;font-family:var(--font-body);">${Math.floor((60 + pairCredit) / 60)} min <span style="color:var(--text-muted);font-size:11px;">all credit</span></button>` : ""}
+      </div>
+    `;
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  } else {
+    startCall(userId, 0);
+  }
+}
+
+async function startCall(userId, prepaidSeconds) {
+  const { name, avatar } = currentRemote;
+  const durationLabel = prepaidSeconds > 0 ? `${Math.round((60 + prepaidSeconds) / 60)} min call` : "Calling...";
+  setupCallUI(name, avatar, durationLabel);
   showScreen("call-screen");
   playRingtone();
   await startCamera();
-  socket.emit("call-user", { calleeId: userId });
+  socket.emit("call-user", { calleeId: userId, prepaidSeconds: prepaidSeconds || undefined });
 }
 
 window.extendCall = function() {
@@ -4849,11 +4887,15 @@ function connectSocket() {
     // Check for pending deep links BEFORE showing any screen
     const profileLink = localStorage.getItem("om_profileLink");
     const streamLink = localStorage.getItem("om_streamLink");
+    const postLink = localStorage.getItem("om_postLink");
 
     if (privateRoomId) {
       // Join private room after registration
       localStorage.removeItem("om_privateRoom");
       joinPrivateRoom(privateRoomId);
+    } else if (postLink) {
+      localStorage.removeItem("om_postLink");
+      setTimeout(() => showThread(postLink, "feed"), 500);
     } else if (profileLink) {
       localStorage.removeItem("om_profileLink");
       showProfile(profileLink);
@@ -4988,25 +5030,23 @@ function connectSocket() {
   // Caller flow
   socket.on("call-ringing", ({ callId }) => { currentCallId = callId; });
 
-  socket.on("call-accepted", async ({ callId }) => {
+  socket.on("call-accepted", async ({ callId, duration }) => {
     currentCallId = callId;
     stopRingtone();
-    // If guest in private room, transition to call screen
     if (privateRoomId && !isCaller) {
       document.getElementById("private-room-screen").classList.remove("active");
       setupCallUI(currentRemote?.name || "Private Call", currentRemote?.avatar, "Connecting...");
       showScreen("call-screen");
-      // Hide extend, chat, tip for private calls
       const extBtn = document.getElementById("extend-call-btn");
       if (extBtn) extBtn.style.display = "none";
       const chatBtn = document.getElementById("call-chat-btn");
-      if (chatBtn) chatBtn.style.display = "none"; // re-enabled when data channel opens
+      if (chatBtn) chatBtn.style.display = "none";
       const tipBtn = document.getElementById("call-tip-btn");
       if (tipBtn) tipBtn.style.display = (myWalletAddress || myAppWallet?.address) ? "" : "none";
       await startCamera();
     }
     $("#call-status-label").textContent = "Connected";
-    startTimer();
+    startTimer(duration || CALL_DURATION);
     if (isCaller) await createAndSendOffer();
   });
 
@@ -5033,7 +5073,7 @@ function connectSocket() {
   });
 
   // Callee flow
-  socket.on("incoming-call", async ({ callId, callerId, callerName, callerAvatar, privateRoom }) => {
+  socket.on("incoming-call", async ({ callId, callerId, callerName, callerAvatar, privateRoom, duration }) => {
     currentCallId = callId;
     currentRemote = { userId: callerId, name: callerName, avatar: callerAvatar || null };
     isCaller = false;
@@ -5072,6 +5112,8 @@ function connectSocket() {
     }
 
     $("#incoming-name").textContent = callerName;
+    const durationLabel = duration && duration > 60 ? ` · ${Math.round(duration / 60)} min call` : "";
+    $("#incoming-name").textContent = callerName + durationLabel;
     incomingOverlay.classList.add("active");
     playRingtone();
     flashTitle(`📞 ${callerName} is calling...`);
@@ -5103,8 +5145,9 @@ function connectSocket() {
     const remote = currentRemote;
     const wasPrivate = !!privateRoomId || !!privateRoomRole;
     cleanup();
-    const msg = "Your 60 seconds are up!";
-    if (remote) setupEndedUI(remote.name, remote.avatar, msg, CALL_DURATION, wasPrivate ? 0 : creditEarned);
+    const durLabel = callDurationTotal > 60 ? `${Math.round(callDurationTotal / 60)} minutes` : "60 seconds";
+    const msg = `Your ${durLabel} are up!`;
+    if (remote) setupEndedUI(remote.name, remote.avatar, msg, callDurationTotal, wasPrivate ? 0 : creditEarned);
     showScreen("ended-screen");
     if (wasPrivate) {
       // Change buttons for private mode
@@ -5114,12 +5157,16 @@ function connectSocket() {
       $("#recall-btn").style.display = "";
       $("#back-btn").textContent = "Back to Contacts";
     }
-    if (socket) { socket.emit("get-contacts"); socket.emit("get-social-score"); }
+    if (socket) { socket.emit("get-contacts"); socket.emit("get-social-score"); socket.emit("get-my-pairs"); }
   });
+
+  // Refresh pair data when server sends it
+  socket.on("my-pairs", (pairs) => { myPairData = pairs || {}; });
 
   socket.on("call-extended", ({ callId, addedSeconds, byUser, pairCreditRemaining }) => {
     if (callId !== currentCallId) return;
     timeLeft += addedSeconds;
+    callDurationTotal += addedSeconds; // update total so ring progress scales correctly
     updateTimerUI();
     showToast(`${byUser} added ${addedSeconds}s (${pairCreditRemaining}s pair credit left)`, "success", 2000);
   });
@@ -5899,18 +5946,28 @@ $("#link-x-btn").addEventListener("click", () => {
 
 function linkify(text) {
   const escaped = escapeHtml(text);
-  return escaped.replace(/(https?:\/\/[^\s<]+)/g, (url) => {
-    // Strip protocol and trailing slash for display, like Twitter
+  // URLs
+  let result = escaped.replace(/(https?:\/\/[^\s<]+)/g, (url) => {
     let display = url.replace(/^https?:\/\//, "").replace(/\/$/, "");
     if (display.length > 35) display = display.slice(0, 32) + "...";
     return `<a href="${url}" target="_blank" rel="noopener noreferrer">${display}</a>`;
   });
+  // @mentions — link to profile (supports letters, numbers, dots, underscores, hyphens)
+  result = result.replace(/(^|[\s>])@([a-zA-Z0-9._-]{1,30})/g, (match, prefix, name) => {
+    return `${prefix}<span class="mention" style="color:var(--red);cursor:pointer;" onclick="showProfile('${escapeJSAttr(name)}')">@${escapeHtml(name)}</span>`;
+  });
+  return result;
 }
 
 // ── Profile Screen ──────────────────────────────────────────────────────
 
 let profileTarget = null; // username being viewed
 let profileIsOwn = false;
+
+window.copyPostLink = function(postId) {
+  const url = `${window.location.origin}/?post=${postId}`;
+  navigator.clipboard.writeText(url).then(() => showToast("Link copied!", "success", 1500)).catch(() => {});
+};
 
 window.switchProfileTab = function(tab) {
   const postsTab = document.getElementById("profile-tab-posts");
@@ -6226,15 +6283,23 @@ window.editCallRate = function() {
   if (editor) { editor.remove(); return; } // toggle off
   editor = document.createElement("div");
   editor.id = "call-rate-editor";
-  editor.style.cssText = "width:100%;margin-top:6px;padding-top:6px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;";
+  editor.style.cssText = "width:100%;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:10px;";
   editor.innerHTML = `
-    <input type="number" id="call-rate-input" min="0" step="0.0001" placeholder="0.00" style="width:80px;padding:6px 8px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:var(--font-mono);text-align:right;">
-    <span style="font-size:11px;color:var(--text-muted);">ETH/min</span>
-    <button onclick="saveCallRate()" style="padding:4px 10px;background:var(--red);border:none;border-radius:6px;color:#fff;font-size:11px;cursor:pointer;">Save</button>
-    <button onclick="document.getElementById('call-rate-editor')?.remove()" style="padding:4px 8px;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);font-size:11px;cursor:pointer;">✕</button>
+    <div style="display:flex;align-items:center;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:8px;padding:2px 4px 2px 12px;gap:4px;">
+      <input type="number" id="call-rate-input" min="0" step="0.0001" placeholder="0.001" style="width:90px;padding:8px 0;background:none;border:none;color:var(--text);font-size:14px;font-family:var(--font-mono);text-align:right;outline:none;">
+      <span style="font-size:11px;color:var(--text-muted);padding-right:8px;white-space:nowrap;">ETH/min</span>
+      <button onclick="saveCallRate()" style="background:none;border:none;color:var(--green);cursor:pointer;padding:6px;display:flex;opacity:0.7;transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Confirm">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      </button>
+      <button onclick="document.getElementById('call-rate-editor')?.remove()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;padding:6px;display:flex;opacity:0.5;transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.5'" title="Cancel">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
   `;
   statsRow.appendChild(editor);
-  document.getElementById("call-rate-input").focus();
+  const inp = document.getElementById("call-rate-input");
+  inp.focus();
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") saveCallRate(); if (e.key === "Escape") document.getElementById("call-rate-editor")?.remove(); });
 };
 
 window.saveCallRate = function() {
@@ -6453,6 +6518,9 @@ function renderPost(post, isThread = false) {
     ${isOwn ? `<button class="post-action" onclick="deletePost('${post.id}')" title="Delete">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
     </button>` : ""}
+    <button class="post-action" onclick="event.stopPropagation();copyPostLink('${post.rootId || post.id}')" title="Copy link">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+    </button>
   </div>`;
   html += `</div>`;
   return html;
@@ -6582,6 +6650,7 @@ function renderNotifications(notifications) {
     else if (n.type === "post") text = `<strong>${escapeHtml(n.fromUser)}</strong> posted: ${escapeHtml(n.preview || "")}`;
     else if (n.type === "follow") text = `<strong>${escapeHtml(n.fromUser)}</strong> followed you`;
     else if (n.type === "repost") text = `<strong>${escapeHtml(n.fromUser)}</strong> reposted your post`;
+    else if (n.type === "mention") text = `<strong>${escapeHtml(n.fromUser)}</strong> mentioned you: ${escapeHtml(n.preview || "")}`;
     else if (n.type === "tip") text = `<strong>${escapeHtml(n.fromUser)}</strong> tipped you ${escapeHtml(n.preview || "")} 💰`;
     let onclick;
     const closeNotif = "document.getElementById('notif-panel').classList.remove('active')";
@@ -7554,6 +7623,12 @@ window.addEventListener("load", async () => {
       if (loginBtn) container.insertBefore(preview, loginBtn.closest(".login-form-row") || loginBtn);
       else container.querySelector(".login-logo")?.after(preview);
     }).catch(() => {});
+  }
+
+  if (params.get("post")) {
+    const postLink = decodeURIComponent(params.get("post")).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 20);
+    localStorage.setItem("om_postLink", postLink);
+    window.history.replaceState({}, "", "/");
   }
 
   if (params.get("stream")) {

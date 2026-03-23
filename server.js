@@ -1572,13 +1572,12 @@ const streamChats = new Map(); // streamId -> [ messages ]
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-// Throttled broadcast — coalesces rapid-fire calls (e.g. multiple users joining at once)
-let _broadcastPending = false;
+// Debounced broadcast — coalesces rapid-fire calls, always uses latest state
+let _broadcastTimer = null;
 function broadcastUserList() {
-  if (_broadcastPending) return;
-  _broadcastPending = true;
-  setImmediate(() => {
-    _broadcastPending = false;
+  if (_broadcastTimer) clearTimeout(_broadcastTimer);
+  _broadcastTimer = setTimeout(() => {
+    _broadcastTimer = null;
     const users = [];
     const seenNames = new Set();
     for (const [userId, data] of onlineUsers) {
@@ -1614,7 +1613,7 @@ function broadcastUserList() {
     }
     io.emit("user-list", users);
     io.emit("online-count", users.length);
-  });
+  }, 50);
 }
 
 function getSocketByUserId(userId) {
@@ -1955,15 +1954,20 @@ io.on("connection", (socket) => {
         userData.connectedAt = Date.now();
       }
     }
+    // Broadcast immediately after status change — don't wait for DB operations
+    broadcastUserList();
+    // Persist online time in background (non-blocking for the broadcast)
+    if (status !== undefined && userData.status !== "online") {
+      // Already flushed above if needed
+    }
     // Update custom status text (persisted like bio)
     if (customStatus !== undefined) {
       userData.customStatus = (typeof customStatus === "string") ? customStatus.trim().slice(0, 50) : null;
-      // Persist to profile
+      broadcastUserList(); // broadcast again with updated custom status
       const profile = await dbGetProfile(userData.name);
       profile.customStatus = userData.customStatus;
       await dbSetProfile(userData.name, profile);
     }
-    broadcastUserList();
   });
 
   socket.on("link-wallet", async ({ walletAddress, walletSignature, walletNonce }) => {
@@ -2347,6 +2351,28 @@ io.on("connection", (socket) => {
           const notif = await dbCreateNotification(udata.name, "post", userData.name, post.id, (trimmed || "").slice(0, 60));
           emitNotification(udata.name, notif);
         }
+      }
+    }
+    // Notify @mentioned users
+    const mentions = (trimmed || "").match(/@([a-zA-Z0-9._-]{1,30})/g);
+    if (mentions) {
+      const notifiedSet = new Set(); // avoid duplicate notifications
+      for (const mention of mentions) {
+        const mentionedName = mention.slice(1).toLowerCase();
+        if (mentionedName === userData.name.toLowerCase()) continue; // don't notify self
+        if (notifiedSet.has(mentionedName)) continue;
+        notifiedSet.add(mentionedName);
+        // Check if this is an X handle — resolve to registered name
+        let resolvedName = mentionedName;
+        const dirEntry = await dbGetDirectoryEntry(mentionedName);
+        if (!dirEntry) {
+          // Try as X username
+          for (const [, d] of onlineUsers) {
+            if (d.xUsername && d.xUsername.toLowerCase() === mentionedName) { resolvedName = d.name.toLowerCase(); break; }
+          }
+        }
+        const notif = await dbCreateNotification(resolvedName, "mention", userData.name, post.rootId || post.id, (trimmed || "").slice(0, 60));
+        emitNotification(resolvedName, notif);
       }
     }
   });
@@ -2917,13 +2943,12 @@ io.on("connection", (socket) => {
     socket.emit("call-request-sent", { targetName });
   });
 
-  socket.on("call-user", async ({ calleeId }) => {
+  socket.on("call-user", async ({ calleeId, prepaidSeconds }) => {
     if (!rateLimit(socket, "call-user", 3, 10_000)) return; // 3 calls per 10s
     const callerId = socket.userId; if (!callerId) return;
     const caller = onlineUsers.get(callerId); if (!caller) return;
     const callee = onlineUsers.get(calleeId);
     if (!callee || callee.disconnectedAt || callee.status === "invisible") {
-      // User is offline or invisible — send a call request notification instead
       const calleeName = callee?.name || [...takenNames.entries()].find(([, uid]) => uid === calleeId)?.[0] || null;
       if (calleeName) {
         const notif = await dbCreateNotification(calleeName, "call_request", caller.name, null, null);
@@ -2937,8 +2962,15 @@ io.on("connection", (socket) => {
     if (isUserInCall(calleeId) || isUserStreaming(calleeId)) { socket.emit("call-error", { message: `${callee.name} is busy` }); return; }
     if (isUserInCall(callerId) || isUserStreaming(callerId)) { socket.emit("call-error", { message: "You're already in a call or stream" }); return; }
 
+    // Validate prepaid seconds against pair credit
+    let validPrepaid = 0;
+    if (prepaidSeconds && typeof prepaidSeconds === "number" && prepaidSeconds > 0) {
+      const pairInfo = await dbGetPairMeetings(caller.name, callee.name);
+      validPrepaid = Math.min(Math.floor(prepaidSeconds), pairInfo.creditSeconds || 0, 3600); // cap at 1hr
+    }
+
     const callId = uuidv4().slice(0, 12);
-    const calleeName = callee.name; // capture name before timeout fires
+    const calleeName = callee.name;
     const ringTimerId = setTimeout(async () => {
       const call = activeCalls.get(callId);
       if (call && !call.startedAt) {
@@ -2950,10 +2982,12 @@ io.on("connection", (socket) => {
       }
     }, RING_TIMEOUT_MS);
 
-    activeCalls.set(callId, { callerId, calleeId, startedAt: null, timerId: null, ringTimerId });
+    const totalDuration = CALL_DURATION_MS + (validPrepaid * 1000);
+    activeCalls.set(callId, { callerId, calleeId, startedAt: null, timerId: null, ringTimerId, prepaidSeconds: validPrepaid, totalDurationMs: totalDuration });
     const cs = getSocketByUserId(calleeId);
-    if (cs) cs.emit("incoming-call", { callId, callerId, callerName: caller.name, callerAvatar: caller.avatar || null, callerXUsername: caller.xUsername || null, callerWalletAddress: caller.walletAddress || null });
-    socket.emit("call-ringing", { callId, calleeId, calleeName: callee.name, calleeAvatar: callee.avatar || null });
+    const callDurationLabel = Math.round(totalDuration / 1000);
+    if (cs) cs.emit("incoming-call", { callId, callerId, callerName: caller.name, callerAvatar: caller.avatar || null, callerXUsername: caller.xUsername || null, callerWalletAddress: caller.walletAddress || null, duration: callDurationLabel });
+    socket.emit("call-ringing", { callId, calleeId, calleeName: callee.name, calleeAvatar: callee.avatar || null, duration: callDurationLabel });
   });
 
   socket.on("accept-call", async ({ callId }) => {
@@ -2964,16 +2998,21 @@ io.on("connection", (socket) => {
     const isPrivate = !!call.privateRoom;
 
     if (isPrivate) {
-      // Private calls: only increment totalMeets (no received/accepted/streak — minimizes DB footprint)
       if (callee) { const cs = await dbGetStats(callee.name); cs.totalMeets++; await dbSetStats(callee.name, cs); await refreshUserStats(call.calleeId); }
       if (caller) { const cs = await dbGetStats(caller.name); cs.totalMeets++; await dbSetStats(caller.name, cs); await refreshUserStats(call.callerId); }
     } else {
-      // Normal calls: full stats recording
       if (callee) { await recordCallOutcome(callee.name, "accepted"); await refreshUserStats(call.calleeId); }
       if (caller) { const cs = await dbGetStats(caller.name); cs.totalMeets++; await dbSetStats(caller.name, cs); await refreshUserStats(call.callerId); }
       if (caller && callee) await dbSetLastCall(caller.name, callee.name);
     }
 
+    // Deduct prepaid credits on accept (not on ring — refunded if missed/declined)
+    if (call.prepaidSeconds > 0 && caller && callee && !isPrivate) {
+      const spent = await dbSpendPairCredit(caller.name, callee.name, call.prepaidSeconds);
+      if (!spent) { call.prepaidSeconds = 0; call.totalDurationMs = CALL_DURATION_MS; } // fallback to 1 min if credit vanished
+    }
+
+    const callDuration = call.totalDurationMs || CALL_DURATION_MS;
     call.timerId = setTimeout(async () => {
       const callerData = onlineUsers.get(call.callerId);
       const calleeData = onlineUsers.get(call.calleeId);
@@ -2989,11 +3028,12 @@ io.on("connection", (socket) => {
       const earned = isPrivate ? 0 : 30;
       if (s1) s1.emit("call-timeout", { callId, creditEarned: earned }); if (s2) s2.emit("call-timeout", { callId, creditEarned: earned });
       cleanupCall(callId);
-    }, CALL_DURATION_MS);
-    // Notify both participants (avoid duplicates)
-    const s1 = getSocketByUserId(call.callerId); if (s1 && s1.id !== socket.id) s1.emit("call-accepted", { callId });
-    const s2a = getSocketByUserId(call.calleeId); if (s2a && s2a.id !== socket.id) s2a.emit("call-accepted", { callId });
-    socket.emit("call-accepted", { callId });
+    }, callDuration);
+    // Notify both participants of accepted call + duration
+    const durationSecs = Math.round(callDuration / 1000);
+    const s1 = getSocketByUserId(call.callerId); if (s1 && s1.id !== socket.id) s1.emit("call-accepted", { callId, duration: durationSecs });
+    const s2a = getSocketByUserId(call.calleeId); if (s2a && s2a.id !== socket.id) s2a.emit("call-accepted", { callId, duration: durationSecs });
+    socket.emit("call-accepted", { callId, duration: durationSecs });
   });
 
   socket.on("decline-call", async ({ callId }) => {
@@ -3109,7 +3149,7 @@ io.on("connection", (socket) => {
       }
     }, RING_TIMEOUT_MS);
 
-    activeCalls.set(callId, { callerId: room.creatorId, calleeId: userId, startedAt: null, timerId: null, ringTimerId, privateRoom: roomId });
+    activeCalls.set(callId, { callerId: room.creatorId, calleeId: userId, startedAt: null, timerId: null, ringTimerId, privateRoom: roomId, prepaidSeconds: 0, totalDurationMs: CALL_DURATION_MS });
 
     // Notify creator of incoming guest
     const creatorSocket = getSocketByUserId(room.creatorId);
@@ -3336,12 +3376,22 @@ app.get("/", async (req, res, next) => {
   const isCrawler = /bot|crawl|spider|preview|slack|discord|telegram|whatsapp|twitter|facebook|linkedin|og-image/i.test(ua);
   if (!isCrawler) return next();
 
-  const { profile, call, stream } = req.query;
+  const { profile, call, stream, post } = req.query;
   let title = SITE_NAME;
   let description = SITE_DESC;
   let url = `https://${SITE_NAME}/`;
 
-  if (profile) {
+  if (post) {
+    const postId = String(post).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 20);
+    const postData = await dbGetPost(postId);
+    if (postData) {
+      const authorName = postData.author || "someone";
+      const preview = (postData.text || "").slice(0, 100);
+      title = `${authorName} on ${SITE_NAME}`;
+      description = preview || `A post on ${SITE_NAME}`;
+      url += `?post=${postId}`;
+    }
+  } else if (profile) {
     const name = decodeURIComponent(profile).replace(/[<>"'&]/g, "").slice(0, 60);
     title = `${name} on ${SITE_NAME}`;
     description = `View ${name}'s profile on ${SITE_NAME} — ${SITE_DESC}`;
@@ -3445,7 +3495,7 @@ setInterval(async () => {
         autoMeetPending.delete(pairKey);
       }, RING_TIMEOUT_MS);
 
-      activeCalls.set(callId, { callerId: caller.userId, calleeId: callee.userId, startedAt: null, timerId: null, ringTimerId });
+      activeCalls.set(callId, { callerId: caller.userId, calleeId: callee.userId, startedAt: null, timerId: null, ringTimerId, prepaidSeconds: 0, totalDurationMs: CALL_DURATION_MS });
 
       const s1 = getSocketByUserId(caller.userId);
       const s2 = getSocketByUserId(callee.userId);
