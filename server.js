@@ -2638,6 +2638,35 @@ io.on("connection", (socket) => {
     broadcastUserList();
   });
 
+  // Link app wallet as login wallet (self-signed — user proves ownership of their own app wallet)
+  socket.on("link-app-wallet", async ({ walletAddress, walletSignature, walletNonce }) => {
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const safeWallet = (walletAddress && typeof walletAddress === "string" && /^0x[0-9a-fA-F]{40}$/.test(walletAddress)) ? walletAddress.toLowerCase() : null;
+    if (!safeWallet) return;
+    // Verify this is actually the user's registered app wallet
+    const profile = await dbGetProfile(userData.name);
+    if (!profile.appWalletAddress || profile.appWalletAddress.toLowerCase() !== safeWallet) {
+      socket.emit("wallet-link-error", { message: "This is not your registered app wallet" });
+      return;
+    }
+    // Verify signature
+    if (!walletSignature || !walletNonce || !verifyWalletSignature(safeWallet, walletSignature, walletNonce)) {
+      socket.emit("wallet-link-error", { message: "Wallet signature verification failed" });
+      return;
+    }
+    // Check wallet isn't already used by another user as login wallet
+    const existingOwner = await dbGetWalletOwner(safeWallet);
+    if (existingOwner && existingOwner !== userData.name.toLowerCase().trim()) {
+      socket.emit("wallet-link-error", { message: "This wallet is already linked to another account." });
+      return;
+    }
+    userData.walletAddress = safeWallet;
+    await dbSetWallet(userData.name, safeWallet);
+    socket.emit("wallet-linked", { walletAddress: safeWallet });
+    broadcastUserList();
+  });
+
   // ── Contacts management ───────────────────────────────────────────────
   socket.on("get-contacts", async () => {
     const userId = socket.userId; if (!userId) return;

@@ -506,6 +506,8 @@
     .profile-action-btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
     .profile-action-btn.primary:hover, .profile-action-btn.primary:active { opacity: 0.9; }
     .profile-action-btn.active { border-color: #E8A83C; color: #E8A83C; }
+    .profile-action-btn.subtle { font-size: 10px; padding: 5px 9px; opacity: 0.5; border-style: dashed; }
+    .profile-action-btn.subtle:hover { opacity: 0.8; }
     .profile-posts { padding: 0 20px 20px; }
     .profile-tab-bar {
       display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 8px;
@@ -2311,7 +2313,7 @@
       <div class="profile-search-wrap" id="profile-search-wrap">
         <div class="profile-search-bar" id="profile-search-bar">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;opacity:0.35;"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input type="text" id="profile-search-input" placeholder="Search users, groups..." maxlength="60" autocomplete="off">
+          <input type="search" id="profile-search-input" placeholder="Search users, groups..." maxlength="60" autocomplete="off" data-1p-ignore data-lpignore="true" data-form-type="other">
         </div>
         <div class="profile-search-results" id="profile-search-results"></div>
       </div>
@@ -2969,6 +2971,99 @@ window.exportE2EKey = async function() {
     URL.revokeObjectURL(a.href);
     showToast("Key exported (password-protected) — keep this file safe!", "success");
   } catch (e) { showToast("Export failed: " + e.message, "error"); }
+};
+
+window.secureAccount = async function() {
+  // Create app wallet if it doesn't exist yet
+  if (!myAppWallet?.address) {
+    showToast("Setting up your wallet...", "info", 2000);
+    try {
+      const w = await getOrCreateAppWallet();
+      if (w?.address && socket) socket.emit("register-app-wallet", { address: w.address });
+    } catch {}
+  }
+  if (!myAppWallet?.address) { showToast("Could not create wallet", "error"); return; }
+  // Open the export wallet overlay (which has the "Enable wallet login" button)
+  exportAppWallet();
+};
+
+window.exportAppWallet = async function() {
+  // Get the private key — may need password unlock
+  let pk = myAppWallet?.privateKey;
+  if (!pk) {
+    const sessionCached = sessionStorage.getItem("mm_app_wallet_decrypted");
+    if (sessionCached) { try { pk = JSON.parse(sessionCached).privateKey; } catch {} }
+  }
+  if (!pk) {
+    const stored = localStorage.getItem("mm_app_wallet");
+    if (!stored) { showToast("No app wallet found", "error"); return; }
+    try {
+      const data = JSON.parse(stored);
+      if (data.privateKey) { pk = data.privateKey; }
+      else if (data.ct) {
+        const pw = await promptPassword("Enter your password to export your app wallet:");
+        if (!pw) return;
+        try { const w = await decryptWalletKey(data, pw); pk = w.privateKey; } catch { showToast("Wrong password", "error"); return; }
+      }
+    } catch { showToast("Could not read wallet data", "error"); return; }
+  }
+  if (!pk) { showToast("No private key available to export", "error"); return; }
+  // Show private key in a secure overlay (not clipboard by default)
+  const addr = myAppWallet?.address || "";
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:250;display:flex;align-items:center;justify-content:center;";
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const card = document.createElement("div");
+  card.style.cssText = "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:340px;max-width:90vw;box-sizing:border-box;position:relative;";
+  card.innerHTML = `
+    <div style="font-size:14px;font-weight:600;margin-bottom:12px;">App Wallet Private Key</div>
+    <div style="font-size:10px;color:var(--text-muted);margin-bottom:8px;word-break:break-all;font-family:var(--font-mono);">${escapeHtml(addr)}</div>
+    <div id="export-pk-reveal" style="display:none;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;padding:10px;word-break:break-all;font-family:var(--font-mono);font-size:11px;color:var(--text);margin-bottom:12px;user-select:all;"></div>
+    <button id="export-pk-show" style="width:100%;padding:10px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-family:var(--font-mono);cursor:pointer;margin-bottom:8px;">Reveal Private Key</button>
+    <button id="export-pk-copy" style="display:none;width:100%;padding:10px;background:none;border:1px solid rgba(74,222,128,0.3);border-radius:8px;color:var(--green);font-size:12px;font-family:var(--font-mono);cursor:pointer;margin-bottom:8px;">Copy to Clipboard</button>
+    <div style="font-size:10px;color:#c44;margin-bottom:12px;">Never share your private key. Anyone with it has full access to this wallet.</div>
+    ${!myWalletAddress ? `<button id="export-pk-login" style="width:100%;padding:10px;background:none;border:1px solid rgba(74,222,128,0.15);border-radius:8px;color:var(--green);font-size:11px;font-family:var(--font-mono);cursor:pointer;margin-bottom:8px;">Enable wallet login</button>
+    <div style="font-size:10px;color:var(--text-muted);margin-bottom:12px;">Import this key into MetaMask or any wallet app, then use "Sign in with Wallet" on any device.</div>` : `<div style="font-size:10px;color:var(--green);margin-bottom:12px;">Wallet login already enabled. Import this key into any wallet app to sign in on other devices.</div>`}
+    <button onclick="this.closest('div[style]').parentElement.remove()" style="width:100%;padding:8px;background:var(--surface-hover);border:1px solid var(--border);border-radius:8px;color:var(--text-muted);font-size:12px;cursor:pointer;">Close</button>
+  `;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  const revealEl = document.getElementById("export-pk-reveal");
+  const showBtn = document.getElementById("export-pk-show");
+  const copyBtn = document.getElementById("export-pk-copy");
+  showBtn.onclick = () => { revealEl.textContent = pk; revealEl.style.display = "block"; showBtn.style.display = "none"; copyBtn.style.display = "block"; };
+  copyBtn.onclick = () => { navigator.clipboard.writeText(pk).then(() => { copyBtn.textContent = "Copied!"; setTimeout(() => { copyBtn.textContent = "Copy to Clipboard"; }, 2000); }).catch(() => showToast("Copy failed", "error")); };
+  // Enable wallet login — signs nonce with app wallet key, links it as login wallet
+  const loginBtn = document.getElementById("export-pk-login");
+  if (loginBtn) {
+    loginBtn.onclick = async () => {
+      try {
+        loginBtn.disabled = true; loginBtn.textContent = "Linking...";
+        const wallet = new ethers.Wallet(pk);
+        const nonceRes = await fetch(`/auth/wallet/nonce?address=${encodeURIComponent(addr)}`);
+        const { nonce } = await nonceRes.json();
+        const message = `Sign this message to verify your wallet ownership.\n\nNonce: ${nonce}`;
+        const signature = await wallet.signMessage(message);
+        socket.emit("link-app-wallet", { walletAddress: addr, walletSignature: signature, walletNonce: nonce });
+        await new Promise((resolve, reject) => {
+          const onLinked = () => { socket.off("wallet-link-error", onErr); resolve(); };
+          const onErr = ({ message }) => { socket.off("wallet-linked", onLinked); reject(new Error(message)); };
+          socket.once("wallet-linked", onLinked);
+          socket.once("wallet-link-error", onErr);
+          setTimeout(() => { socket.off("wallet-linked", onLinked); socket.off("wallet-link-error", onErr); reject(new Error("Timeout")); }, 10000);
+        });
+        myWalletAddress = addr;
+        localStorage.setItem("om_walletAddress", addr);
+        loginBtn.textContent = "Wallet login enabled!";
+        loginBtn.style.borderColor = "var(--green)";
+        loginBtn.style.color = "var(--green)";
+        showToast("Wallet login enabled — you can now sign in with this wallet on any device", "success", 5000);
+      } catch (e) {
+        loginBtn.disabled = false; loginBtn.textContent = "Enable wallet login";
+        showToast(e.message || "Failed to link wallet", "error");
+      }
+    };
+  }
 };
 
 window.importE2EKey = function() {
@@ -6766,6 +6861,107 @@ function _qProviderRotate() {
 }
 function _deadline() { return Math.floor(Date.now() / 1000) + 600; }
 
+// ── App wallet funding check ─────────────────────────────────────────────
+// Returns true if the app wallet has enough balance, or user funded it via overlay.
+// requiredWei: BigInt of value needed (excluding gas). gasBuffer added automatically.
+async function ensureAppWalletFunded(requiredWei, label) {
+  // Only applies to app wallet transactions — external wallet handles its own balance
+  if (window._signer) return true;
+  if (!myAppWallet?.address) return true;
+  // Gas estimates by tx type:
+  //   launch():     ~400k (CREATE2 + init + curve config + observation)
+  //   buyExactIn(): ~180k (curve math + token transfer + observation + fee)
+  //   sellExactIn():~150k (similar to buy)
+  //   ETH transfer: ~21k  (tips, buy time)
+  // Use requiredWei to infer type: 0 = launch, else check label
+  let gasBuffer;
+  try {
+    const feeData = await _qProvider().getFeeData();
+    // Use maxFeePerGas (EIP-1559) if available, else legacy gasPrice
+    const gasPrice = feeData.maxFeePerGas || feeData.gasPrice || ethers.parseUnits("1", "gwei");
+    let gasEstimate;
+    if (requiredWei === 0n) gasEstimate = 500000n;       // launch
+    else if (label?.includes("token") || label?.includes("Buying token")) gasEstimate = 250000n; // curve buy/sell
+    else gasEstimate = 50000n;                             // simple transfer (tip, buy time)
+    gasBuffer = gasPrice * gasEstimate * 2n;               // 2x safety margin
+  } catch {
+    gasBuffer = ethers.parseEther("0.002"); // fallback
+  }
+  const needed = requiredWei + gasBuffer;
+  let currentBal = 0n;
+  try {
+    currentBal = await _qProvider().getBalance(myAppWallet.address);
+    if (currentBal >= needed) return true;
+  } catch { return true; } // if RPC fails, let the tx attempt proceed
+  // Insufficient — show funding overlay
+  const shortfall = needed - currentBal;
+  const ethNeeded = ethers.formatEther(shortfall);
+  const hasExternal = !!window._connectedAddress;
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.id = "fund-wallet-overlay";
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:260;display:flex;align-items:center;justify-content:center;padding:20px;";
+    overlay.onclick = (e) => { if (e.target === overlay) { cleanup(); resolve(false); } };
+    const card = document.createElement("div");
+    card.style.cssText = "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:340px;max-width:90vw;box-sizing:border-box;text-align:center;";
+    const addrShort = myAppWallet.address.slice(0, 6) + "..." + myAppWallet.address.slice(-4);
+    card.innerHTML = `
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Fund Your Wallet</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:14px;">${label ? escapeHtml(label) + " requires" : "You need"} at least ${parseFloat(ethNeeded).toFixed(5)} ETH</div>
+      <div style="font-size:20px;font-weight:700;margin-bottom:4px;" id="fund-balance">...</div>
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:16px;">current balance</div>
+      ${hasExternal ? `<button id="fund-transfer-btn" style="width:100%;padding:12px;background:#4CAF50;border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px;font-family:var(--font-mono);">Send ${parseFloat(ethNeeded).toFixed(5)} ETH from wallet</button>` : ""}
+      <div style="background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px;">
+        <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">${hasExternal ? "Or send manually to" : "Send ETH to this address"}</div>
+        <div style="font-size:11px;font-family:var(--font-mono);word-break:break-all;user-select:all;color:var(--text);cursor:pointer;" onclick="navigator.clipboard.writeText('${myAppWallet.address}');this.style.color='var(--green)';setTimeout(()=>this.style.color='var(--text)',1500)" title="Click to copy">${escapeHtml(myAppWallet.address)}</div>
+      </div>
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:14px;" id="fund-status">Waiting for funds...</div>
+      <button onclick="document.getElementById('fund-wallet-overlay')?.remove()" id="fund-cancel-btn" style="width:100%;padding:8px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);font-size:12px;cursor:pointer;">Cancel</button>
+    `;
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    // Poll balance
+    let pollId = null;
+    let cancelled = false;
+    function cleanup() { cancelled = true; clearInterval(pollId); overlay.remove(); }
+    async function checkBalance() {
+      if (cancelled) return;
+      try {
+        const bal = await _qProvider().getBalance(myAppWallet.address);
+        const balEl = document.getElementById("fund-balance");
+        if (balEl) balEl.textContent = parseFloat(ethers.formatEther(bal)).toFixed(5) + " ETH";
+        if (bal >= needed) {
+          const statusEl = document.getElementById("fund-status");
+          if (statusEl) { statusEl.textContent = "Funded!"; statusEl.style.color = "var(--green)"; }
+          setTimeout(() => { cleanup(); resolve(true); }, 600);
+        }
+      } catch {}
+    }
+    checkBalance();
+    pollId = setInterval(checkBalance, 4000);
+    // Cancel button
+    document.getElementById("fund-cancel-btn").onclick = () => { cleanup(); resolve(false); };
+    // External wallet transfer
+    if (hasExternal) {
+      document.getElementById("fund-transfer-btn").onclick = async () => {
+        const btn = document.getElementById("fund-transfer-btn");
+        try {
+          btn.disabled = true; btn.textContent = "Confirm in wallet...";
+          const tx = await window._signer.sendTransaction({ to: myAppWallet.address, value: shortfall });
+          btn.textContent = "Mining...";
+          await tx.wait();
+          btn.textContent = "Sent!";
+          checkBalance();
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = `Send ${parseFloat(ethNeeded).toFixed(5)} ETH from wallet`;
+          if (e.code !== "ACTION_REJECTED" && e.code !== 4001) showToast(e.reason || e.message || "Transfer failed", "error");
+        }
+      };
+    }
+  });
+}
+
 async function _getCurveSnapshot() {
   for (let i = 0; i < _READ_RPCS.length; i++) {
     try {
@@ -6908,6 +7104,7 @@ window.executeBuy = async function() {
   if (!val || val <= 0) { showToast("Enter an ETH amount", "error"); return; }
   const signer = await _resolveSigner();
   if (!signer) return;
+  if (!(await ensureAppWalletFunded(ethers.parseEther(String(val)), "Buying tokens"))) return;
   const btn = document.getElementById("trade-buy-btn");
   const statusEl = document.getElementById("trade-status");
   btn.disabled = true; btn.textContent = "Quoting...";
@@ -7522,10 +7719,20 @@ function handleProfileData(data) {
     actionsHtml += `<button class="profile-action-btn" onclick="copyProfileLink('${escapeJSAttr(escapeHtml(myName))}')">${svgLink} Share</button>`;
     if (!myWalletAddress) actionsHtml += `<button class="profile-action-btn" onclick="startWalletLink()">+ Wallet</button>`;
     if (!myXUsername) actionsHtml += `<button class="profile-action-btn" onclick="startXLink()">+ X</button>`;
+    // Account security — prominent for unverified users, subtle for verified
     if (!myXUsername && !myWalletAddress) {
-      actionsHtml += `<button class="profile-action-btn" onclick="exportE2EKey()">Export Key</button>`;
-      actionsHtml += `<button class="profile-action-btn" onclick="importE2EKey()">Import Key</button>`;
+      actionsHtml += `<button class="profile-action-btn" onclick="secureAccount()" style="border-color:rgba(74,222,128,0.3);color:var(--green);">Secure Account</button>`;
     }
+    // Subtle exports
+    let secHtml = "";
+    if (!myXUsername && !myWalletAddress) {
+      secHtml += `<button class="profile-action-btn subtle" onclick="exportE2EKey()">Export DM Key</button>`;
+      secHtml += `<button class="profile-action-btn subtle" onclick="importE2EKey()">Import DM Key</button>`;
+    }
+    if (myAppWallet?.address) {
+      secHtml += `<button class="profile-action-btn subtle" onclick="exportAppWallet()">Export Wallet</button>`;
+    }
+    actionsHtml += secHtml;
     actionsHtml += `<button class="profile-action-btn" onclick="exportMyPosts()" title="Export posts &amp; post integrity hash onchain">${svgExport} Export</button>`;
   } else {
     const online = users.find(u => u.name.toLowerCase() === data.username.toLowerCase());
@@ -7689,6 +7896,7 @@ window.confirmBuyTime = async function(toName, callRateStr, toAddr) {
   try {
     const signer = await _resolveSigner();
     if (!signer) { if (btn) { btn.disabled = false; btn.textContent = "Buy"; } return; }
+    if (!(await ensureAppWalletFunded(totalWei, `Buying ${mins}min call time`))) { if (btn) { btn.disabled = false; btn.textContent = "Buy"; } return; }
 
     const tx = await signer.sendTransaction({ to: toAddr, value: totalWei });
 
@@ -8469,14 +8677,21 @@ const CURVE_SALE_LAUNCH_ABI = [
 ];
 const ERC20_APPROVE_ABI = ["function approve(address spender, uint256 amount) returns (bool)"];
 
-window.showLaunchToken = function() {
+window.showLaunchToken = async function() {
   const existing = document.getElementById("launch-token-overlay");
   if (existing) existing.remove();
   if (!myName) { showToast("Sign in first", "error"); return; }
-  const hasWallet = window._signer || myAppWallet?.privateKey || myAppWallet?.address;
+  let hasWallet = window._signer || myAppWallet?.privateKey || myAppWallet?.address;
   if (!hasWallet) {
-    showToast("Connect a wallet first", "error");
-    if (typeof showWalletModal === "function") showWalletModal();
+    // Try to create app wallet on demand for guests
+    try {
+      const w = await getOrCreateAppWallet();
+      if (w?.address && socket) socket.emit("register-app-wallet", { address: w.address });
+      hasWallet = !!w?.address;
+    } catch {}
+  }
+  if (!hasWallet) {
+    showToast("Could not set up wallet", "error");
     return;
   }
   const coinSymbol = myName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "COIN";
@@ -8520,8 +8735,13 @@ window.submitLaunchToken = async function() {
   const signer = await _resolveSigner();
   if (!signer) return;
 
-  const isAppWallet = !(window._signer || window._signer);
+  const isAppWallet = !window._signer;
   btn.disabled = true; btn.style.opacity = "0.5"; btn.textContent = "Preparing...";
+  // Ensure app wallet has gas for launch tx
+  if (isAppWallet && !(await ensureAppWalletFunded(0n, "Launching coin"))) {
+    btn.disabled = false; btn.style.opacity = "1"; btn.textContent = `Launch $${myName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "Coin"}`;
+    return;
+  }
   statusEl.style.display = "block"; statusEl.textContent = isAppWallet ? "Sending from app wallet..." : "Computing token address...";
 
   // Ask server to compute CREATE2 address and prepare room (name/symbol/image derived from user)
@@ -8601,7 +8821,7 @@ window.submitLaunchToken = async function() {
 window.graduateToken = async function(tokenAddress) {
   const signer = await _resolveSigner();
   if (!signer) return;
-  const isAppWallet = !(window._signer || window._signer);
+  const isAppWallet = !window._signer;
   showToast(isAppWallet ? "Sending graduate tx..." : "Confirm in your wallet...", "info", 5000);
   try {
     const iface = new ethers.Interface(CURVE_SALE_LAUNCH_ABI);
@@ -8854,6 +9074,7 @@ window.confirmTip = async function() {
   try {
     const signer = await _resolveSigner();
     if (!signer) return;
+    if (!(await ensureAppWalletFunded(ethers.parseEther(amount), `Tipping ${name}`))) return;
     const tx = await signer.sendTransaction({
       to: addr,
       value: ethers.parseEther(amount),
