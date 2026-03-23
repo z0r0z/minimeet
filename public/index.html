@@ -397,12 +397,12 @@
     .profile-banner-edit.visible { display: flex; }
     .profile-banner-edit:hover { background: rgba(255,255,255,0.3); }
     .profile-search-wrap {
-      position: relative; margin-top: 10px;
+      position: relative; margin-top: 10px; max-width: 200px;
     }
     .profile-search-bar {
       display: flex; align-items: center; gap: 6px;
-      padding: 6px 10px; background: rgba(255,255,255,0.04);
-      border: 1px solid var(--border); border-radius: 8px;
+      padding: 5px 10px; background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border); border-radius: 20px;
     }
     .profile-search-bar input {
       flex: 1; background: none; border: none; color: var(--text);
@@ -411,8 +411,8 @@
     }
     .profile-search-bar input::placeholder { color: #555; }
     .profile-search-results {
-      position: absolute; left: 0; right: 0; top: calc(100% + 4px);
-      background: var(--surface); border: 1px solid var(--border);
+      position: absolute; left: 0; top: calc(100% + 4px);
+      width: 260px; background: var(--surface); border: 1px solid var(--border);
       border-radius: 10px; max-height: 220px; overflow-y: auto;
       display: none; z-index: 20;
       box-shadow: 0 8px 24px rgba(0,0,0,0.5);
