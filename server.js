@@ -2451,13 +2451,14 @@ io.on("connection", (socket) => {
   });
 
   // ── Chat ─────────────────────────────────────────────────────────────────
-  socket.on("chat-public", async ({ text }) => {
+  socket.on("chat-public", async ({ text, image }) => {
     if (!rateLimit(socket, "chat", 10, 10_000)) return;
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
     const trimmed = (text || "").trim().slice(0, 500);
-    if (!trimmed) return;
-    const msg = { id: uuidv4().slice(0, 10), userId, name: userData.name, avatar: userData.avatar || null, xUsername: userData.xUsername || null, walletAddress: userData.walletAddress || null, text: trimmed, ts: Date.now() };
+    const safeImage = (image && typeof image === "string" && image.startsWith("data:image/") && image.length <= 500_000) ? image : null;
+    if (!trimmed && !safeImage) return;
+    const msg = { id: uuidv4().slice(0, 10), userId, name: userData.name, avatar: userData.avatar || null, xUsername: userData.xUsername || null, walletAddress: userData.walletAddress || null, text: trimmed, image: safeImage, ts: Date.now() };
     publicChat.push(msg);
     if (publicChat.length > MAX_CHAT_HISTORY) publicChat.shift();
     io.emit("chat-public", msg);

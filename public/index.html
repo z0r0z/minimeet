@@ -2136,7 +2136,12 @@
     </button>
     <div class="chat-panel active" id="chat-panel">
       <div class="chat-messages" id="chat-messages"></div>
+      <div class="quick-post-preview" id="chat-img-preview" style="margin:0 8px;"></div>
       <div class="chat-input-row">
+        <button class="quick-post-img-btn" id="chat-img-btn" title="Add image" style="flex-shrink:0;padding:6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        </button>
+        <input type="file" id="chat-img-file" accept="image/*" style="display:none;">
         <textarea class="chat-input" id="chat-input" placeholder="Say something..." maxlength="500" rows="1"></textarea>
         <button class="chat-send" id="chat-send">Send</button>
       </div>
@@ -3869,7 +3874,8 @@ function renderChatMsg(msg, container, opts = {}) {
     <div class="chat-msg-body">
       <span class="chat-msg-name" style="color:${color};cursor:pointer" onclick="showProfile('${escapeJSAttr(msg.name)}')">${chatDisplayName(msg)}</span>
       <span class="chat-msg-time">${formatChatTime(msg.ts)}</span>
-      <div class="chat-msg-text">${escapeHtml(msg.text)}</div>
+      ${msg.text ? `<div class="chat-msg-text">${linkify(msg.text)}</div>` : ""}
+      ${msg.image ? `<img src="${escapeHtml(msg.image)}" alt="" style="max-width:200px;max-height:150px;border-radius:6px;margin-top:4px;cursor:pointer;display:block;" onclick="window.open(this.src,'_blank')">` : ""}
       ${showReactions ? renderReactions(msg.id, msg.reactions) : ""}
     </div>
     ${showReactions ? `<button class="chat-react-btn" onclick="showReactPicker(event,'${msg.id}')">+</button>` : ""}
@@ -3957,12 +3963,16 @@ function escapeJSAttr(s) {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/</g, "\\x3c").replace(/>/g, "\\x3e");
 }
 
+let pendingChatImage = null;
 function sendPublicChat() {
   const input = $("#chat-input");
   const text = input.value.trim();
-  if (!text || !socket) return;
-  socket.emit("chat-public", { text });
+  if ((!text && !pendingChatImage) || !socket) return;
+  socket.emit("chat-public", { text, image: pendingChatImage || undefined });
   input.value = "";
+  pendingChatImage = null;
+  const preview = document.getElementById("chat-img-preview");
+  if (preview) { preview.classList.remove("has-image"); preview.innerHTML = ""; }
 }
 
 function sendStreamChat() {
@@ -4303,6 +4313,10 @@ $("#banner-file-input").addEventListener("change", async (e) => {
   } catch (err) { showToast("Image failed to load", "error"); }
   e.target.value = "";
 });
+
+// Drag-and-drop for profile avatar (128px) and banner (800px)
+setupImageDrop($("#profile-avatar"), (dataUrl) => showUploadPreview("avatar", dataUrl), resizeImage);
+setupImageDrop($("#profile-banner"), (dataUrl) => showUploadPreview("banner", dataUrl), resizeBanner);
 
 // ── Render Contacts ──────────────────────────────────────────────────────
 
@@ -6492,6 +6506,14 @@ function handleProfileData(data) {
         </div>
       </div>
       <input type="file" id="profile-post-file" accept="image/*" style="display:none;" onchange="handleProfilePostImage(this)" />`;
+    // Set up drag-and-drop + paste on profile compose
+    setTimeout(() => {
+      setupImageDrop(document.getElementById("post-input"), (dataUrl) => {
+        pendingProfilePostImage = dataUrl;
+        const preview = document.getElementById("profile-post-preview");
+        if (preview) { preview.classList.add("has-image"); preview.innerHTML = `<img src="${dataUrl}" alt=""><button class="quick-post-preview-close" onclick="pendingProfilePostImage=null;this.parentElement.classList.remove('has-image');this.parentElement.innerHTML='';">&times;</button>`; }
+      });
+    }, 0);
   }
 }
 
@@ -6676,6 +6698,29 @@ function resizeBanner(file) {
       img.src = e.target.result;
     };
     reader.readAsDataURL(file);
+  });
+}
+
+// Drag-and-drop + paste image helper
+// Usage: setupImageDrop(el, onImage, resizer?) — resizer defaults to resizeBanner (800px)
+function setupImageDrop(el, onImage, resizer) {
+  if (!el) return;
+  const resize = resizer || resizeBanner;
+  el.addEventListener("dragover", (e) => { e.preventDefault(); el.style.outline = "2px dashed rgba(232,69,60,0.4)"; el.style.outlineOffset = "-2px"; });
+  el.addEventListener("dragleave", () => { el.style.outline = ""; el.style.outlineOffset = ""; });
+  el.addEventListener("drop", async (e) => {
+    e.preventDefault(); el.style.outline = ""; el.style.outlineOffset = "";
+    const file = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith("image/"));
+    if (file) { try { onImage(await resize(file)); } catch {} }
+  });
+  el.addEventListener("paste", async (e) => {
+    const items = [...(e.clipboardData?.items || [])];
+    const imgItem = items.find(i => i.type.startsWith("image/"));
+    if (imgItem) {
+      e.preventDefault();
+      const file = imgItem.getAsFile();
+      if (file) { try { onImage(await resize(file)); } catch {} }
+    }
   });
 }
 
@@ -7029,12 +7074,74 @@ function renderMessages() {
   panel.innerHTML = html;
 }
 
+let _groupAvatar = null;
 window.showCreateGroup = function() {
-  const name = prompt("Group name:");
-  if (!name || !name.trim()) return;
-  const invites = prompt("Invite users (comma-separated names or @handles, or leave empty):");
-  const inviteNames = invites ? invites.split(",").map(s => s.trim().replace(/^@/, "")).filter(Boolean) : [];
-  if (socket) socket.emit("create-group", { name: name.trim(), inviteNames });
+  const existing = document.getElementById("create-group-overlay");
+  if (existing) existing.remove();
+  _groupAvatar = null;
+  const overlay = document.createElement("div");
+  overlay.id = "create-group-overlay";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:250;display:flex;align-items:flex-start;justify-content:center;padding-top:60px;overflow-y:auto;";
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  // Build directory list for invite checkboxes
+  const dirUsers = directoryData.filter(u => u.name.toLowerCase() !== myName?.toLowerCase()).slice(0, 50);
+  const card = document.createElement("div");
+  card.style.cssText = "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:340px;max-width:90vw;box-sizing:border-box;";
+  card.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="font-size:15px;font-weight:600;">New Group</div>
+      <button onclick="this.closest('#create-group-overlay').remove()" style="background:none;border:none;color:var(--text-muted);font-size:18px;cursor:pointer;padding:4px;line-height:1;">&times;</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+      <div id="group-avatar-circle" style="width:48px;height:48px;border-radius:50%;background:var(--surface-hover);border:2px dashed rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;overflow:hidden;background-size:cover;background-position:center;" onclick="document.getElementById('group-avatar-file').click()" title="Add group photo">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.4"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      </div>
+      <input type="file" id="group-avatar-file" accept="image/*" style="display:none;">
+      <input id="group-name-input" type="text" placeholder="Group name" maxlength="50" style="flex:1;padding:10px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;box-sizing:border-box;">
+    </div>
+    ${dirUsers.length > 0 ? `
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Invite members</div>
+      <input id="group-invite-search" type="text" placeholder="Search users..." style="width:100%;padding:7px 10px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;margin-bottom:6px;box-sizing:border-box;">
+      <div id="group-invite-list" style="max-height:160px;overflow-y:auto;margin-bottom:14px;">
+        ${dirUsers.map(u => `<label style="display:flex;align-items:center;gap:8px;padding:5px 4px;cursor:pointer;font-size:12px;" data-name="${escapeHtml(u.name.toLowerCase())}">
+          <input type="checkbox" value="${escapeJSAttr(u.name)}" class="group-invite-cb" style="accent-color:var(--red);">
+          <span>${escapeHtml(u.name)}${u.xUsername ? ` <span style="color:var(--text-muted)">@${escapeHtml(u.xUsername)}</span>` : ""}</span>
+        </label>`).join("")}
+      </div>
+    ` : '<div style="font-size:11px;color:#555;margin-bottom:14px;">No users in directory yet — you can invite later.</div>'}
+    <button onclick="submitCreateGroup()" style="width:100%;padding:11px;background:var(--red);border:none;border-radius:8px;color:#fff;cursor:pointer;font-size:14px;font-weight:600;">Create Group</button>
+  `;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  // Avatar upload
+  const avatarCircle = document.getElementById("group-avatar-circle");
+  document.getElementById("group-avatar-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try { const dataUrl = await resizeImage(file); _groupAvatar = dataUrl; avatarCircle.style.backgroundImage = safeCssUrl(dataUrl); avatarCircle.style.borderStyle = "solid"; avatarCircle.innerHTML = ""; } catch {}
+    e.target.value = "";
+  });
+  setupImageDrop(avatarCircle, (dataUrl) => { _groupAvatar = dataUrl; avatarCircle.style.backgroundImage = safeCssUrl(dataUrl); avatarCircle.style.borderStyle = "solid"; avatarCircle.innerHTML = ""; });
+  // Search filter
+  const searchInput = document.getElementById("group-invite-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      const q = searchInput.value.toLowerCase();
+      document.querySelectorAll("#group-invite-list label").forEach(l => {
+        l.style.display = (l.dataset.name || "").includes(q) ? "" : "none";
+      });
+    });
+  }
+  document.getElementById("group-name-input").focus();
+};
+
+window.submitCreateGroup = function() {
+  const name = document.getElementById("group-name-input")?.value?.trim();
+  if (!name) { showToast("Enter a group name", "error"); return; }
+  const checkboxes = document.querySelectorAll(".group-invite-cb:checked");
+  const inviteNames = [...checkboxes].map(cb => cb.value);
+  if (socket) socket.emit("create-group", { name, inviteNames });
+  document.getElementById("create-group-overlay")?.remove();
+  _groupAvatar = null;
 };
 
 window.acceptGroupInvite = function(groupId) {
@@ -7097,43 +7204,75 @@ let myGatedRooms = [];
 let activeGatedRoomId = null;
 let gatedRoomMessages = new Map();
 
+let _gatedRoomAvatar = null;
 window.showCreateGatedRoom = function() {
   const existing = document.getElementById("create-gated-overlay");
   if (existing) existing.remove();
+  _gatedRoomAvatar = null;
   const overlay = document.createElement("div");
   overlay.id = "create-gated-overlay";
-  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:250;display:flex;align-items:flex-start;justify-content:center;padding-top:80px;";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:250;display:flex;align-items:flex-start;justify-content:center;padding-top:60px;overflow-y:auto;";
   overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
   const card = document.createElement("div");
-  card.style.cssText = "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;width:320px;max-width:90vw;";
+  card.style.cssText = "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:340px;max-width:90vw;box-sizing:border-box;";
   card.innerHTML = `
-    <div style="font-size:15px;font-weight:600;margin-bottom:12px;">Create Token-Gated Room</div>
-    <input id="gated-name" type="text" placeholder="Room name" maxlength="50" style="width:100%;padding:8px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;margin-bottom:8px;box-sizing:border-box;">
-    <input id="gated-token" type="text" placeholder="Token contract address (0x...)" maxlength="42" style="width:100%;padding:8px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-family:var(--font-mono);margin-bottom:8px;box-sizing:border-box;">
-    <div style="display:flex;gap:8px;margin-bottom:8px;">
-      <select id="gated-type" style="flex:1;padding:8px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;">
-        <option value="ERC20">ERC-20</option>
-        <option value="NFT">NFT (ERC-721)</option>
-      </select>
-      <input id="gated-min" type="text" placeholder="Min balance" value="1" style="flex:1;padding:8px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-family:var(--font-mono);text-align:right;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="font-size:15px;font-weight:600;">Token-Gated Room</div>
+      <button onclick="this.closest('#create-gated-overlay').remove()" style="background:none;border:none;color:var(--text-muted);font-size:18px;cursor:pointer;padding:4px;line-height:1;">&times;</button>
     </div>
-    <div style="display:flex;gap:8px;">
-      <button onclick="this.closest('#create-gated-overlay').remove()" style="flex:1;padding:10px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);cursor:pointer;font-size:13px;">Cancel</button>
-      <button onclick="submitCreateGatedRoom()" style="flex:1;padding:10px;background:var(--red);border:none;border-radius:8px;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Create</button>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+      <div id="gated-avatar-circle" style="width:48px;height:48px;border-radius:50%;background:var(--surface-hover);border:2px dashed rgba(255,255,255,0.15);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;overflow:hidden;background-size:cover;background-position:center;" onclick="document.getElementById('gated-avatar-file').click()" title="Add room photo">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.4"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      </div>
+      <input type="file" id="gated-avatar-file" accept="image/*" style="display:none;">
+      <input id="gated-name" type="text" placeholder="Room name" maxlength="50" style="flex:1;padding:10px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;box-sizing:border-box;">
     </div>
+    <input id="gated-token" type="text" placeholder="Token contract (0x...)" maxlength="42" style="width:100%;padding:10px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-family:var(--font-mono);margin-bottom:10px;box-sizing:border-box;">
+    <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:10px;">
+      <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:4px;padding:8px;cursor:pointer;font-size:12px;color:var(--text);background:rgba(255,255,255,0.06);transition:background 0.15s;" id="gated-type-erc20-label">
+        <input type="radio" name="gated-type" value="ERC20" checked style="display:none;" id="gated-type-erc20"> ERC-20
+      </label>
+      <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:4px;padding:8px;cursor:pointer;font-size:12px;color:var(--text-muted);transition:background 0.15s;" id="gated-type-nft-label">
+        <input type="radio" name="gated-type" value="NFT" style="display:none;" id="gated-type-nft"> NFT
+      </label>
+    </div>
+    <input id="gated-min" type="text" placeholder="Minimum balance (e.g. 1)" value="1" style="width:100%;padding:10px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;font-family:var(--font-mono);margin-bottom:14px;box-sizing:border-box;">
+    <button onclick="submitCreateGatedRoom()" style="width:100%;padding:11px;background:var(--red);border:none;border-radius:8px;color:#fff;cursor:pointer;font-size:14px;font-weight:600;">Create Room</button>
   `;
   overlay.appendChild(card);
   document.body.appendChild(overlay);
+  // Radio toggle styling
+  const erc20Radio = document.getElementById("gated-type-erc20");
+  const nftRadio = document.getElementById("gated-type-nft");
+  const erc20Label = document.getElementById("gated-type-erc20-label");
+  const nftLabel = document.getElementById("gated-type-nft-label");
+  function updateRadioStyle() {
+    erc20Label.style.background = erc20Radio.checked ? "rgba(255,255,255,0.06)" : "transparent";
+    erc20Label.style.color = erc20Radio.checked ? "var(--text)" : "var(--text-muted)";
+    nftLabel.style.background = nftRadio.checked ? "rgba(255,255,255,0.06)" : "transparent";
+    nftLabel.style.color = nftRadio.checked ? "var(--text)" : "var(--text-muted)";
+  }
+  erc20Radio.addEventListener("change", updateRadioStyle);
+  nftRadio.addEventListener("change", updateRadioStyle);
+  // Avatar upload
+  const avatarCircle = document.getElementById("gated-avatar-circle");
+  document.getElementById("gated-avatar-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try { const dataUrl = await resizeImage(file); _gatedRoomAvatar = dataUrl; avatarCircle.style.backgroundImage = safeCssUrl(dataUrl); avatarCircle.style.borderStyle = "solid"; avatarCircle.innerHTML = ""; } catch {}
+    e.target.value = "";
+  });
+  setupImageDrop(avatarCircle, (dataUrl) => { _gatedRoomAvatar = dataUrl; avatarCircle.style.backgroundImage = safeCssUrl(dataUrl); avatarCircle.style.borderStyle = "solid"; avatarCircle.innerHTML = ""; });
   document.getElementById("gated-name").focus();
 };
 
 window.submitCreateGatedRoom = function() {
   const name = document.getElementById("gated-name")?.value?.trim();
   const token = document.getElementById("gated-token")?.value?.trim();
-  const type = document.getElementById("gated-type")?.value;
+  const type = document.querySelector('input[name="gated-type"]:checked')?.value || "ERC20";
   const min = document.getElementById("gated-min")?.value?.trim() || "1";
   if (!name || !token || !/^0x[0-9a-fA-F]{40}$/.test(token)) { showToast("Enter a valid room name and token address", "error"); return; }
-  if (socket) socket.emit("create-gated-room", { name, tokenAddress: token, tokenType: type, minBalance: min });
+  if (socket) socket.emit("create-gated-room", { name, tokenAddress: token, tokenType: type, minBalance: min, avatar: _gatedRoomAvatar || undefined });
+  _gatedRoomAvatar = null;
   document.getElementById("create-gated-overlay")?.remove();
 };
 
@@ -7666,6 +7805,14 @@ window.clearPostImage = function() {
   $("#quick-post-preview").innerHTML = "";
 };
 
+// Drag-and-drop + paste for feed post compose
+setupImageDrop($("#quick-post-input"), (dataUrl) => {
+  pendingPostImage = dataUrl;
+  const preview = $("#quick-post-preview");
+  preview.classList.add("has-image");
+  preview.innerHTML = `<img src="${dataUrl}" alt=""><button class="quick-post-preview-close" onclick="clearPostImage()">&times;</button>`;
+});
+
 // Notifications
 // Messages panel
 $("#msgs-btn").addEventListener("click", async (e) => {
@@ -7893,6 +8040,19 @@ $("#chat-send").addEventListener("click", sendPublicChat);
 $("#chat-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPublicChat(); }
 });
+// Chat image upload + drag/drop
+function setChatImage(dataUrl) {
+  pendingChatImage = dataUrl;
+  const preview = document.getElementById("chat-img-preview");
+  if (preview) { preview.classList.add("has-image"); preview.innerHTML = `<img src="${dataUrl}" alt=""><button class="quick-post-preview-close" onclick="pendingChatImage=null;document.getElementById('chat-img-preview').classList.remove('has-image');document.getElementById('chat-img-preview').innerHTML='';">&times;</button>`; }
+}
+$("#chat-img-btn").addEventListener("click", () => { $("#chat-img-file").click(); });
+$("#chat-img-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  try { setChatImage(await resizeBanner(file)); } catch { showToast("Image failed", "error"); }
+  e.target.value = "";
+});
+setupImageDrop($("#chat-input"), setChatImage);
 // Auto-resize chat textarea
 $("#chat-input").addEventListener("input", function() {
   this.style.height = "auto";
