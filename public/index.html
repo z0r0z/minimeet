@@ -5303,6 +5303,7 @@ function connectSocket() {
   socket.on("contacts-list", (contacts) => {
     myContacts = contacts || [];
     renderContacts($("#search-input").value);
+    updateProfileFollowBtn(); // keep follow button in sync
     // If user has no contacts and no other users online, show feed
     if (myContacts.length === 0 && users.filter(u => u.userId !== myUserId).length === 0) {
       const feedTab = document.getElementById("tab-feed");
@@ -7755,11 +7756,14 @@ function handleProfileData(data) {
     }
     const contactKey = data.xUsername ? "@" + data.xUsername.toLowerCase() : (data.displayName || data.username).toLowerCase();
     const isFollowing = myContacts.includes(contactKey);
-    actionsHtml += `<button class="profile-action-btn${isFollowing ? ' active' : ''}" onclick="toggleProfileFollow('${safeName}', ${data.xUsername ? "'" + escapeJSAttr(escapeHtml(data.xUsername)) + "'" : "null"})">${svgStar(isFollowing)} ${isFollowing ? 'Following' : 'Follow'}</button>`;
+    actionsHtml += `<button class="profile-action-btn${isFollowing ? ' active' : ''}" id="profile-follow-btn" onclick="toggleProfileFollow('${safeName}', ${data.xUsername ? "'" + escapeJSAttr(escapeHtml(data.xUsername)) + "'" : "null"})">${svgStar(isFollowing)} ${isFollowing ? 'Following' : 'Follow'}</button>`;
     actionsHtml += `<button class="profile-action-btn" onclick="createPrivateRoom()">${svgLock} Private</button>`;
     actionsHtml += `<button class="profile-action-btn" onclick="copyProfileLink('${safeName}')">${svgLink} Share</button>`;
   }
   $("#profile-actions").innerHTML = actionsHtml;
+  // Store profile data on follow button for live updates
+  const _followBtn = document.getElementById("profile-follow-btn");
+  if (_followBtn) _followBtn._profileData = { name: (data.displayName || data.username), xUsername: data.xUsername || null };
 
   // Compose box for own profile
   if (profileIsOwn) {
@@ -8197,19 +8201,23 @@ window.toggleProfileFollow = function(name, xUsername) {
     myContacts.push(contactKey);
     showToast(`Following ${name}`, "success");
   }
-  // Update the follow button in-place (no full profile refetch)
-  const isFollowing = myContacts.includes(contactKey);
-  const followBtn = $("#profile-actions")?.querySelector("[title='Follow'], [title='Unfollow']");
-  if (followBtn) {
-    followBtn.title = isFollowing ? "Unfollow" : "Follow";
-    followBtn.classList.toggle("active", isFollowing);
-    const svg = followBtn.querySelector("svg");
-    if (svg) svg.setAttribute("fill", isFollowing ? "currentColor" : "none");
-    // Update label text
-    const textNode = followBtn.lastChild;
-    if (textNode && textNode.nodeType === 3) textNode.textContent = isFollowing ? " Following" : " Follow";
-  }
+  updateProfileFollowBtn();
 };
+
+function updateProfileFollowBtn() {
+  const btn = document.getElementById("profile-follow-btn");
+  if (!btn) return;
+  // Re-derive contactKey from the current profile target
+  const data = btn._profileData;
+  if (!data) return;
+  const contactKey = data.xUsername ? "@" + data.xUsername.toLowerCase() : data.name.toLowerCase();
+  const isFollowing = myContacts.includes(contactKey);
+  btn.classList.toggle("active", isFollowing);
+  const svg = btn.querySelector("svg");
+  if (svg) svg.setAttribute("fill", isFollowing ? "currentColor" : "none");
+  const textNode = btn.lastChild;
+  if (textNode && textNode.nodeType === 3) textNode.textContent = isFollowing ? " Following" : " Follow";
+}
 
 window.focusReply = function(rootId, authorName) {
   const replyInput = document.getElementById("reply-input-" + rootId);
