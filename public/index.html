@@ -6540,7 +6540,7 @@ window.editCallRate = function() {
   editor.style.cssText = "width:100%;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:center;gap:10px;";
   editor.innerHTML = `
     <div style="display:flex;align-items:center;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:8px;padding:2px 4px 2px 12px;gap:4px;">
-      <input type="number" id="call-rate-input" min="0" step="0.0001" placeholder="0.001" style="width:90px;padding:8px 0;background:none;border:none;color:var(--text);font-size:14px;font-family:var(--font-mono);text-align:right;outline:none;">
+      <input type="text" inputmode="decimal" id="call-rate-input" placeholder="0.001" style="width:90px;padding:8px 0;background:none;border:none;color:var(--text);font-size:14px;font-family:var(--font-mono);text-align:right;outline:none;">
       <span style="font-size:11px;color:var(--text-muted);padding-right:8px;white-space:nowrap;">ETH/min</span>
       <button onclick="saveCallRate()" style="background:none;border:none;color:var(--green);cursor:pointer;padding:6px;display:flex;opacity:0.7;transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'" title="Confirm">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -7139,7 +7139,7 @@ window.submitCreateGroup = function() {
   if (!name) { showToast("Enter a group name", "error"); return; }
   const checkboxes = document.querySelectorAll(".group-invite-cb:checked");
   const inviteNames = [...checkboxes].map(cb => cb.value);
-  if (socket) socket.emit("create-group", { name, inviteNames });
+  if (socket) socket.emit("create-group", { name, inviteNames, avatar: _groupAvatar || undefined });
   document.getElementById("create-group-overlay")?.remove();
   _groupAvatar = null;
 };

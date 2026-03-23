@@ -5,7 +5,8 @@ const { v4: uuidv4 } = require("uuid");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { verifyMessage, computeAddress } = require("ethers");
+const ethers = require("ethers");
+const { verifyMessage, computeAddress } = ethers;
 
 const app = express();
 const server = http.createServer(app);
@@ -708,9 +709,9 @@ async function dbSetProfile(name, profile) {
 
 // ─── Group chats ─────────────────────────────────────────────────────────────
 
-async function dbCreateGroup(id, name, creator) {
+async function dbCreateGroup(id, name, creator, avatar) {
   if (supabase) {
-    try { await supabase.from("group_chats").insert({ id, name, creator, created_at: new Date().toISOString() }); } catch (e) { console.warn("Group create error:", e.message); }
+    try { await supabase.from("group_chats").insert({ id, name, creator, avatar: avatar || null, created_at: new Date().toISOString() }); } catch (e) { console.warn("Group create error:", e.message); }
     try { await supabase.from("group_members").insert({ group_id: id, user_name: creator, role: "admin", joined_at: new Date().toISOString() }); } catch (e) { console.warn("Group member add error:", e.message); }
     return;
   }
@@ -851,7 +852,6 @@ async function checkTokenBalance(tokenAddress, tokenType, walletAddress) {
   const RPCS = [TOKEN_RPC, "https://ethereum.publicnode.com", "https://eth.drpc.org"];
   for (const rpc of RPCS) {
     try {
-      const { ethers } = require("ethers");
       const provider = new ethers.JsonRpcProvider(rpc, 1, { staticNetwork: true });
       const abi = tokenType === "NFT" ? ERC721_ABI : ERC20_ABI;
       const contract = new ethers.Contract(tokenAddress, abi, provider);
@@ -3123,15 +3123,16 @@ io.on("connection", (socket) => {
 
   // Poke — lightweight nudge
   // ── Group chats ──────────────────────────────────────────────────────────
-  socket.on("create-group", async ({ name, inviteNames }) => {
+  socket.on("create-group", async ({ name, inviteNames, avatar }) => {
     if (!rateLimit(socket, "create-group", 3, 60_000)) return;
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
     if (!name || typeof name !== "string") return;
     const groupName = name.trim().slice(0, 50);
     if (!groupName) return;
+    const safeAvatar = (avatar && typeof avatar === "string" && avatar.length <= MAX_AVATAR_BYTES) ? avatar : null;
     const groupId = uuidv4().slice(0, 12);
-    await dbCreateGroup(groupId, groupName, userData.name.toLowerCase().trim());
+    await dbCreateGroup(groupId, groupName, userData.name.toLowerCase().trim(), safeAvatar);
     // Send invites
     if (Array.isArray(inviteNames)) {
       for (const invName of inviteNames.slice(0, 100)) {
