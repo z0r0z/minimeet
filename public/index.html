@@ -6134,14 +6134,36 @@ function connectSocket() {
     document.body.appendChild(overlay);
   });
 
-  socket.on("group-stream-started", ({ groupId, streamId, streamerName, groupName }) => {
+  socket.on("group-stream-started", ({ groupId, gatedRoomId, streamId, streamerName, groupName }) => {
     showToast(`${streamerName} is live in ${groupName}!`, "success", 5000);
-    // Auto-join option — show a toast with a join link
     const toastEl = document.querySelector(".toast.visible");
     if (toastEl) {
       toastEl.style.cursor = "pointer";
       toastEl.onclick = () => { joinStream(streamId); toastEl.classList.remove("visible"); };
       toastEl.innerHTML += ' <span style="text-decoration:underline;">Join</span>';
+    }
+    // Post a system message in the relevant chat
+    const liveMsg = { id: "live-" + streamId, sender: "", senderName: streamerName, text: "", ts: Date.now(), isLive: true, streamId };
+    if (groupId && activeGroupId === groupId) {
+      appendGroupMsg({ ...liveMsg, text: `${streamerName} is live!` }, null);
+    }
+    if (gatedRoomId) {
+      // Append to gated room chat (main DM view)
+      if (activeGatedRoomId === gatedRoomId) {
+        appendGroupMsg({ ...liveMsg, text: `${streamerName} is live!` }, null);
+      }
+      // Append to chart overlay chat if open for this room
+      const overlay = document.getElementById("token-chart-overlay");
+      if (overlay?.dataset?.roomId === gatedRoomId) {
+        const chatEl = document.getElementById("chart-chat-messages");
+        if (chatEl) {
+          const el = document.createElement("div");
+          el.style.cssText = "padding:6px 0;text-align:center;";
+          el.innerHTML = `<span style="font-size:11px;color:var(--green);cursor:pointer;" onclick="joinStream('${escapeJSAttr(streamId)}')">${escapeHtml(streamerName)} is live — <u>join stream</u></span>`;
+          chatEl.appendChild(el);
+          chatEl.scrollTop = chatEl.scrollHeight;
+        }
+      }
     }
   });
 
@@ -7460,13 +7482,17 @@ function handleTokenChart(data) {
   const priceY = (p) => TOP + priceH - ((p - min) / range) * priceH;
   const idxX = (i) => LEFT + (i / Math.max(obs.length - 1, 1)) * (w - LEFT - RIGHT);
 
-  // Horizontal grid lines
+  // Horizontal grid lines (top, mid, bottom of price area)
   ctx.strokeStyle = "rgba(255,255,255,0.05)";
   ctx.lineWidth = 0.5;
   for (let g = 0; g <= 2; g++) {
     const gy = TOP + (g / 2) * priceH;
     ctx.beginPath(); ctx.moveTo(LEFT, gy); ctx.lineTo(w - RIGHT, gy); ctx.stroke();
   }
+
+  // Separator between price and volume zones
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.beginPath(); ctx.moveTo(LEFT, PRICE_BOTTOM + GAP); ctx.lineTo(w - RIGHT, PRICE_BOTTOM + GAP); ctx.stroke();
 
   // Volume bars (separate bottom zone)
   const volumes = obs.map(o => Number(BigInt(o.volume)));
@@ -7481,32 +7507,54 @@ function handleTokenChart(data) {
   }
   ctx.globalAlpha = 1;
 
-  // Price line
+  // Price line color
   const lineColor = prices[prices.length - 1] >= prices[0] ? "#4CAF50" : "#EF5350";
-  ctx.strokeStyle = lineColor;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let i = 0; i < prices.length; i++) {
-    i === 0 ? ctx.moveTo(idxX(i), priceY(prices[i])) : ctx.lineTo(idxX(i), priceY(prices[i]));
-  }
-  ctx.stroke();
 
-  // Gradient fill under line
+  // Gradient fill under line (draw first, then line on top)
   const grad = ctx.createLinearGradient(0, TOP, 0, PRICE_BOTTOM);
-  grad.addColorStop(0, lineColor + "18");
-  grad.addColorStop(1, lineColor + "02");
+  grad.addColorStop(0, lineColor + "15");
+  grad.addColorStop(1, lineColor + "01");
   ctx.fillStyle = grad;
   ctx.beginPath();
-  for (let i = 0; i < prices.length; i++) {
-    i === 0 ? ctx.moveTo(idxX(i), priceY(prices[i])) : ctx.lineTo(idxX(i), priceY(prices[i]));
-  }
+  ctx.moveTo(idxX(0), priceY(prices[0]));
+  for (let i = 1; i < prices.length; i++) ctx.lineTo(idxX(i), priceY(prices[i]));
   ctx.lineTo(idxX(prices.length - 1), PRICE_BOTTOM);
   ctx.lineTo(idxX(0), PRICE_BOTTOM);
   ctx.closePath();
   ctx.fill();
 
+  // Price line (smooth via quadratic curves when many points)
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(idxX(0), priceY(prices[0]));
+  if (prices.length > 4) {
+    // Smooth: quadratic bezier through midpoints
+    for (let i = 0; i < prices.length - 1; i++) {
+      const x0 = idxX(i), y0 = priceY(prices[i]);
+      const x1 = idxX(i + 1), y1 = priceY(prices[i + 1]);
+      const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+      if (i === 0) ctx.lineTo(mx, my);
+      else ctx.quadraticCurveTo(x0, y0, mx, my);
+    }
+    // Final segment to last point
+    const lastIdx = prices.length - 1;
+    ctx.quadraticCurveTo(idxX(lastIdx - 1), priceY(prices[lastIdx - 1]), idxX(lastIdx), priceY(prices[lastIdx]));
+  } else {
+    for (let i = 1; i < prices.length; i++) ctx.lineTo(idxX(i), priceY(prices[i]));
+  }
+  ctx.stroke();
+
+  // Last price horizontal dashed reference line
+  const lastPy = priceY(prices[prices.length - 1]);
+  ctx.strokeStyle = lineColor + "40";
+  ctx.lineWidth = 0.5;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(LEFT, lastPy); ctx.lineTo(w - RIGHT, lastPy); ctx.stroke();
+  ctx.setLineDash([]);
+
   // Last price dot
-  const lastPx = idxX(prices.length - 1), lastPy = priceY(prices[prices.length - 1]);
+  const lastPx = idxX(prices.length - 1);
   ctx.fillStyle = lineColor;
   ctx.beginPath(); ctx.arc(lastPx, lastPy, 2.5, 0, Math.PI * 2); ctx.fill();
 
@@ -7516,6 +7564,8 @@ function handleTokenChart(data) {
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
   ctx.fillText(formatEthPrice(max * 1e6), LEFT - 4, TOP + 1);
+  const midPrice = (max + min) / 2;
+  ctx.fillText(formatEthPrice(midPrice * 1e6), LEFT - 4, TOP + priceH / 2);
   ctx.fillText(formatEthPrice(min * 1e6), LEFT - 4, PRICE_BOTTOM - 1);
 
   // X-axis time labels
@@ -8885,6 +8935,14 @@ function appendGroupMsg(msg, container) {
   const empty = container.querySelector(".dm-empty");
   if (empty) empty.remove();
   const el = document.createElement("div");
+  // System/live messages — centered, no bubble
+  if (msg.isLive && msg.streamId) {
+    el.style.cssText = "text-align:center;padding:8px 0;";
+    el.innerHTML = `<span style="font-size:11px;color:var(--green);cursor:pointer;" onclick="joinStream('${escapeJSAttr(msg.streamId)}')">${escapeHtml(msg.senderName || "Someone")} is live — <u>join stream</u></span>`;
+    container.appendChild(el);
+    container.scrollTop = container.scrollHeight;
+    return;
+  }
   const isSent = msg.sender === myName?.toLowerCase().trim();
   el.className = `dm-msg ${isSent ? "sent" : "received"}`;
   let content = "";
@@ -9379,15 +9437,18 @@ window.openGatedRoomChat = function(roomId) {
   shareBtn.onmouseleave = () => shareBtn.style.opacity = "0.6";
   shareBtn.onclick = () => copyGateLink(roomId);
   headerLeft.appendChild(shareBtn);
-  const liveBtn = document.createElement("button");
-  liveBtn.id = "gated-live-btn";
-  liveBtn.title = "Go live in this room";
-  liveBtn.style.cssText = "background:none;border:none;cursor:pointer;font-size:14px;padding:4px 6px;opacity:0.6;color:var(--green);font-family:var(--font-mono);font-weight:600;";
-  liveBtn.textContent = "● LIVE";
-  liveBtn.onmouseenter = () => liveBtn.style.opacity = "1";
-  liveBtn.onmouseleave = () => liveBtn.style.opacity = "0.6";
-  liveBtn.onclick = () => goLiveInGatedRoom(roomId);
-  headerLeft.appendChild(liveBtn);
+  const isCreator = room?.creator === (myName || "").toLowerCase().trim();
+  if (isCreator) {
+    const liveBtn = document.createElement("button");
+    liveBtn.id = "gated-live-btn";
+    liveBtn.title = "Go live in this room";
+    liveBtn.style.cssText = "background:none;border:none;cursor:pointer;font-size:11px;padding:4px 6px;opacity:0.5;color:var(--text-muted);font-family:var(--font-mono);";
+    liveBtn.textContent = "go live";
+    liveBtn.onmouseenter = () => { liveBtn.style.opacity = "1"; liveBtn.style.color = "var(--green)"; };
+    liveBtn.onmouseleave = () => { liveBtn.style.opacity = "0.5"; liveBtn.style.color = "var(--text-muted)"; };
+    liveBtn.onclick = () => goLiveInGatedRoom(roomId);
+    headerLeft.appendChild(liveBtn);
+  }
   const container = $("#dm-messages");
   const msgs = gatedRoomMessages.get(roomId) || [];
   container.innerHTML = msgs.length === 0 ? '<div class="dm-empty">Loading...</div>' : "";

@@ -2985,13 +2985,19 @@ io.on("connection", (socket) => {
 
   // P2P direct messages (persisted)
   socket.on("chat-dm", async ({ toUserId, toName, text, image, encrypted }) => {
-    if (!rateLimit(socket, "chat", 10, 10_000)) return;
+    const isEncrypted = !!encrypted;
+    // Stricter rate limit for large encrypted payloads (image bundles)
+    if (isEncrypted && typeof text === "string" && text.length > 5000) {
+      if (!rateLimit(socket, "chat-dm-large", 3, 30_000)) return;
+    } else {
+      if (!rateLimit(socket, "chat", 10, 10_000)) return;
+    }
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
-    const trimmed = (text || "").trim().slice(0, 2000); // larger limit for encrypted base64
-    const safeImage = (!encrypted && image && typeof image === "string" && image.startsWith("data:image/") && image.length <= 500_000) ? image : null;
+    const maxLen = isEncrypted ? 700_000 : 2000;
+    const trimmed = (text || "").trim().slice(0, maxLen);
+    const safeImage = (!isEncrypted && image && typeof image === "string" && image.startsWith("data:image/") && image.length <= 500_000) ? image : null;
     if (!trimmed && !safeImage) return;
-    const isEncrypted = !!encrypted;
 
     // Resolve target: userId → online user, or name/wallet → resolved name
     let targetName = null;
@@ -4293,8 +4299,9 @@ io.on("connection", (socket) => {
       const cuid = takenNames.get(dbToken.creator.toLowerCase().trim());
       const cdata = cuid ? onlineUsers.get(cuid) : null;
       if (cdata?.avatar) creatorAvatar = cdata.avatar;
-      else if (!creatorAvatar && supabase) {
-        try { const { data: p } = await supabase.from("users").select("avatar").eq("name", dbToken.creator).single(); if (p?.avatar) creatorAvatar = p.avatar; } catch {}
+      else if (!creatorAvatar) {
+        const cached = await dbGetAvatar(dbToken.creator);
+        if (cached) creatorAvatar = cached;
       }
     }
     socket.emit("token-info", { tokenAddress, ...(dbToken || {}), creatorAvatar, curve: state });
