@@ -6245,11 +6245,13 @@ function connectSocket() {
         actEl._trades = [trade, ...actEl._trades].slice(0, 50);
         renderActivityList(actEl._trades);
       }
-      // Refresh holders and chart from server
+      // Refresh holders, chart, activity, and earnings from server
       if (socket) {
         socket.emit("get-token-holders", { tokenAddress: _chartTokenAddress });
         socket.emit("get-token-chart", { tokenAddress: _chartTokenAddress });
         socket.emit("get-token-earnings", { tokenAddress: _chartTokenAddress });
+        // Also re-fetch full activity from DB to catch any trades we may have missed
+        socket.emit("get-token-activity", { tokenAddress: _chartTokenAddress });
       }
     }
   });
@@ -7593,11 +7595,11 @@ function handleTokenInfo(data) {
     const creatorDisplay = escapeHtml(data.creator || "unknown");
     const avatar = data.creatorAvatar;
     const pfpColor = getColor(creator);
-    const pfpStyle = avatar ? `background:url('${avatar.replace(/'/g, "\\'")}') center/cover` : `background:${pfpColor}`;
+    const pfpBg = avatar ? `background-image:${safeCssUrl(avatar)};background-size:cover;background-position:center` : `background:${pfpColor}`;
     const pfpInner = avatar ? "" : `<span style="font-family:var(--font-mono);font-size:7px;font-weight:700;color:#fff">${getInitials(creator)}</span>`;
     infoEl.innerHTML = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-        <div style="width:20px;height:20px;border-radius:50%;${pfpStyle};display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;" onclick="showProfile('${escapeJSAttr(creator)}')">${pfpInner}</div>
-        <span style="cursor:pointer;font-size:11px;" onclick="showProfile('${escapeJSAttr(creator)}')">${creatorDisplay}</span>
+        <div style="width:20px;height:20px;border-radius:50%;${pfpBg};display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;" onclick="showProfile('${escapeJSAttr(creator)}')">${pfpInner}</div>
+        <span style="cursor:pointer;font-size:11px;text-decoration:underline;text-decoration-color:rgba(255,255,255,0.15);text-underline-offset:2px;" onclick="showProfile('${escapeJSAttr(creator)}')">${creatorDisplay}</span>
         <span style="color:var(--text-muted);font-size:10px;">&middot;</span>
         <a href="https://etherscan.io/address/${escapeHtml(addr)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;font-size:10px;font-family:var(--font-mono);">${escapeHtml(addr.slice(0,6))}...${escapeHtml(addr.slice(-4))}</a>
       </div>`

@@ -1313,9 +1313,13 @@ async function dbUpdateLaunchedTokenTx(tokenAddress, txHash) {
 
 async function dbRecordTrade(tokenAddress, trader, traderName, type, tokenAmount, ethAmount, txHash) {
   const addr = tokenAddress.toLowerCase();
-  const row = { token_address: addr, trader: trader.toLowerCase(), trader_name: traderName || null, type, token_amount: tokenAmount, eth_amount: ethAmount, tx_hash: txHash, created_at: new Date().toISOString() };
+  const id = uuidv4().slice(0, 12);
+  const row = { id, token_address: addr, trader: trader.toLowerCase(), trader_name: traderName || null, type, token_amount: tokenAmount, eth_amount: ethAmount, tx_hash: txHash, created_at: new Date().toISOString() };
   if (supabase) {
-    try { await supabase.from("token_trades").insert(row); } catch (e) { console.warn("Trade record error:", e.message); }
+    try {
+      const { error } = await supabase.from("token_trades").insert(row);
+      if (error) console.warn("Trade record error:", error.message, error.details);
+    } catch (e) { console.warn("Trade record exception:", e.message); }
     return;
   }
   const stored = jsonGet("token_trades", addr);
