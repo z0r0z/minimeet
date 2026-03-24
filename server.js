@@ -537,6 +537,7 @@ async function dbSavePublicMsg(msg) {
     try {
       const row = { id: msg.id, name: msg.name, avatar: msg.avatar, text: msg.text, created_at: new Date(msg.ts).toISOString() };
       // Only include optional columns if they exist (avoids failing on older schemas)
+      if (msg.image) row.image = msg.image;
       if (msg.xUsername) row.x_username = msg.xUsername;
       if (msg.walletAddress) row.wallet_address = msg.walletAddress;
       const { error } = await supabase.from("public_messages").insert(row);
@@ -560,7 +561,7 @@ async function dbLoadPublicMsgs(limit = 50) {
       if (data) return data.reverse().map(d => ({
         id: d.id, name: d.name, avatar: d.avatar,
         xUsername: d.x_username || null, walletAddress: d.wallet_address || null,
-        text: d.text, ts: new Date(d.created_at).getTime(),
+        text: d.text, image: d.image || null, ts: new Date(d.created_at).getTime(),
       }));
     } catch (e) { console.warn("Public msg read error:", e.message); }
     return [];
