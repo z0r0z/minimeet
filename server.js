@@ -4012,7 +4012,11 @@ io.on("connection", (socket) => {
     if (!name || typeof name !== "string" || !tokenAddress || !/^0x[0-9a-fA-F]{40}$/.test(tokenAddress)) return;
     const roomName = name.trim().slice(0, 50);
     const type = tokenType === "NFT" ? "NFT" : "ERC20";
-    const minBal = (minBalance && /^\d+$/.test(minBalance) && BigInt(minBalance) > 0n) ? minBalance : "1";
+    // Convert human-readable token amount to wei (18 decimals) for ERC20; NFTs stay as-is
+    let minBal = type === "NFT" ? "1" : ethers.parseUnits("1", 18).toString();
+    if (minBalance && /^\d+(\.\d+)?$/.test(minBalance) && parseFloat(minBalance) > 0) {
+      minBal = type === "NFT" ? String(Math.floor(parseFloat(minBalance))) : ethers.parseUnits(minBalance, 18).toString();
+    }
     const safeAvatar = (avatar && typeof avatar === "string" && avatar.length <= MAX_AVATAR_BYTES) ? avatar : null;
     const safeDesc = (typeof description === "string" ? description.trim().slice(0, 280) : "") || null;
     const roomId = uuidv4().slice(0, 12);

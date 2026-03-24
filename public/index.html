@@ -4282,7 +4282,11 @@ function closeDM() {
   $("#dm-overlay").classList.remove("active");
   dmTargetUserId = null;
   activeGroupId = null;
-  activeGatedRoomId = null;
+  if (activeGatedRoomId) {
+    activeGatedRoomId = null;
+    // Clean URL if it was a gate link
+    if (window.location.search.includes("gate=")) window.history.pushState({}, "", "/");
+  }
 }
 
 function loadOlderDMs() {
@@ -5182,7 +5186,8 @@ function connectSocket() {
       setTimeout(() => showTokenChart(coinLink), 500);
     } else if (gateLink) {
       localStorage.removeItem("om_gateLink");
-      setTimeout(() => showGateScreen(gateLink), 500);
+      // Use pending pattern — showGateScreen checks membership, so it needs myGatedRooms loaded
+      _pendingGateLink = gateLink;
     } else if (privateRoomId) {
       // Join private room after registration
       localStorage.removeItem("om_privateRoom");
@@ -6338,6 +6343,12 @@ function connectSocket() {
       const rid = _pendingGatedRoomOpen;
       _pendingGatedRoomOpen = null;
       if (myGatedRooms.find(r => r.id === rid)) openGatedRoomChat(rid);
+    }
+    // Handle deep link — open chat if member, else show gate screen
+    if (_pendingGateLink) {
+      const gid = _pendingGateLink;
+      _pendingGateLink = null;
+      showGateScreen(gid); // checks membership internally
     }
     // Refresh chart chat input if coin page is open
     const chartOverlay = document.getElementById("token-chart-overlay");
@@ -8969,6 +8980,7 @@ window.goLiveInGatedRoom = function(roomId) {
 let myGatedRooms = [];
 let activeGatedRoomId = null;
 let _pendingGatedRoomOpen = null;
+let _pendingGateLink = null;
 let gatedRoomMessages = new Map();
 
 let _gatedRoomAvatar = null;
@@ -9333,6 +9345,9 @@ window.graduateToken = async function(tokenAddress) {
 };
 
 window.showGateScreen = async function(roomId) {
+  // If already a member, go straight to chat
+  const existing = myGatedRooms.find(r => r.id === roomId);
+  if (existing) { openGatedRoomChat(roomId); return; }
   // Fetch room info
   let room;
   try {
@@ -9413,6 +9428,7 @@ window.openGatedRoomChat = function(roomId) {
   activeGroupId = null;
   dmTargetUserId = null;
   dmTargetName = null;
+  window.history.pushState({ gate: roomId }, "", `/?gate=${roomId}`);
   const room = myGatedRooms.find(r => r.id === roomId);
   const pfp = $("#dm-header-pfp");
   const color = getColor(room?.name || "Room");
@@ -10266,7 +10282,11 @@ $("#back-btn").addEventListener("click", () => {
 // ── Auto-reconnect on refresh ────────────────────────────────────────────
 // Handle browser back/forward for profile URLs
 window.addEventListener("popstate", (e) => {
-  if (e.state?.explore) {
+  if (e.state?.gate) {
+    showGateScreen(e.state.gate);
+  } else if (e.state?.coin) {
+    showTokenChart(e.state.coin);
+  } else if (e.state?.explore) {
     showExplore(typeof e.state.explore === "string" ? e.state.explore : undefined);
   } else if (e.state?.profile) {
     showProfile(e.state.profile);
@@ -10274,6 +10294,8 @@ window.addEventListener("popstate", (e) => {
     joinStream(e.state.stream);
   } else if (myUserId) {
     document.getElementById("explore-overlay")?.remove();
+    document.getElementById("token-chart-overlay")?.remove();
+    closeDM();
     document.title = "minimeet.cc";
     showScreen("contacts-screen");
   }
