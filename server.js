@@ -29,7 +29,7 @@ app.use((req, res, next) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob: https://pbs.twimg.com",
-    "connect-src 'self' https://cdn.socket.io https://ethereum.publicnode.com https://1rpc.io wss://relay.walletconnect.com https://relay.walletconnect.com https://verify.walletconnect.com",
+    "connect-src 'self' https://cdn.socket.io https://ethereum.publicnode.com https://1rpc.io https://eth.drpc.org https://eth.merkle.io https://eth.llamarpc.com wss://relay.walletconnect.com https://relay.walletconnect.com https://verify.walletconnect.com",
     "frame-src 'none'",
     "object-src 'none'",
     "base-uri 'self'",
