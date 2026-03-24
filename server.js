@@ -521,13 +521,21 @@ function jsonGet(store, key) {
   return v !== undefined ? v : null;
 }
 
+const _jsonWriteTimers = new Map();
 function jsonSet(store, key, value) {
   if (!jsonStores[store]) jsonStores[store] = {};
   if (value !== null && value !== undefined) jsonStores[store][key] = value; else delete jsonStores[store][key];
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(path.join(DATA_DIR, `${store}.json`), JSON.stringify(jsonStores[store]), "utf-8");
-  } catch (e) { console.warn(`JSON write error (${store}):`, e.message); }
+  // Debounced async write to avoid blocking the event loop
+  if (_jsonWriteTimers.has(store)) clearTimeout(_jsonWriteTimers.get(store));
+  _jsonWriteTimers.set(store, setTimeout(() => {
+    _jsonWriteTimers.delete(store);
+    try {
+      if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFile(path.join(DATA_DIR, `${store}.json`), JSON.stringify(jsonStores[store]), "utf-8", (err) => {
+        if (err) console.warn(`JSON write error (${store}):`, err.message);
+      });
+    } catch (e) { console.warn(`JSON write error (${store}):`, e.message); }
+  }, 100));
 }
 
 // ─── Public chat persistence ─────────────────────────────────────────────────
@@ -1710,13 +1718,8 @@ async function dbGetUnreadCount(name) {
 // Helper: send real-time notification if user is online
 function emitNotification(recipientName, notif) {
   if (!notif) return;
-  for (const [userId, data] of onlineUsers) {
-    if (data.name.toLowerCase() === recipientName.toLowerCase() && !data.disconnectedAt) {
-      const s = getSocketByUserId(userId);
-      if (s) s.emit("new-notification", notif);
-      break;
-    }
-  }
+  const s = getSocketByName(recipientName);
+  if (s) s.emit("new-notification", notif);
 }
 
 // ─── E2E encryption public keys ──────────────────────────────────────────────
@@ -1761,14 +1764,19 @@ async function claimWalletInbox(walletAddress, userName, socket) {
       const { data: dms } = await supabase.from("direct_messages").select("id, pair, sender, sender_name, text, encrypted, created_at")
         .like("pair", `%${safeFilterKey(addr)}%`).order("created_at", { ascending: true });
       if (dms && dms.length > 0) {
-        let claimed = 0;
+        // Batch updates by new pair value to reduce DB calls
+        const pairGroups = new Map(); // newPair -> [ids]
         for (const dm of dms) {
-          // Rewrite pair: replace wallet address with username
           const newPair = dm.pair.replace(addr, name);
           if (newPair !== dm.pair) {
-            await supabase.from("direct_messages").update({ pair: newPair }).eq("id", dm.id);
-            claimed++;
+            if (!pairGroups.has(newPair)) pairGroups.set(newPair, []);
+            pairGroups.get(newPair).push(dm.id);
           }
+        }
+        let claimed = 0;
+        for (const [newPair, ids] of pairGroups) {
+          await supabase.from("direct_messages").update({ pair: newPair }).in("id", ids);
+          claimed += ids.length;
         }
         // Also migrate notifications
         await supabase.from("notifications").update({ recipient: name }).eq("recipient", addr);
@@ -2247,36 +2255,33 @@ function broadcastUserList() {
   if (_broadcastTimer) clearTimeout(_broadcastTimer);
   _broadcastTimer = setTimeout(() => {
     _broadcastTimer = null;
+    // Pre-build reverse indexes to avoid nested loops (O(n+m+p) instead of O(n*m*p))
+    const streamerIndex = new Map(); // userId -> stream info
+    for (const [streamId, s] of activeStreams) {
+      streamerIndex.set(s.streamerId, { streamId, title: s.title, viewerCount: s.viewers.size });
+    }
+    const callIndex = new Map(); // userId -> partner info
+    for (const [, call] of activeCalls) {
+      if (call.startedAt) {
+        const callerData = onlineUsers.get(call.callerId);
+        const calleeData = onlineUsers.get(call.calleeId);
+        if (callerData) callIndex.set(call.callerId, { userId: call.calleeId, name: calleeData?.name, avatar: calleeData?.avatar || null });
+        if (calleeData) callIndex.set(call.calleeId, { userId: call.callerId, name: callerData?.name, avatar: callerData?.avatar || null });
+      }
+    }
     const users = [];
     const seenNames = new Set();
     for (const [userId, data] of onlineUsers) {
       if (!data.disconnectedAt && !data.privateRoom && data.status !== "invisible" && !seenNames.has(data.name.toLowerCase())) {
         seenNames.add(data.name.toLowerCase());
-        // Check if user is streaming
-        let streaming = null;
-        for (const [streamId, s] of activeStreams) {
-          if (s.streamerId === userId) {
-            streaming = { streamId, title: s.title, viewerCount: s.viewers.size };
-            break;
-          }
-        }
-        // Check if user is in a call
-        let inCallWith = null;
-        for (const [, call] of activeCalls) {
-          if (call.startedAt && (call.callerId === userId || call.calleeId === userId)) {
-            const partnerId = call.callerId === userId ? call.calleeId : call.callerId;
-            const partner = onlineUsers.get(partnerId);
-            if (partner) inCallWith = { userId: partnerId, name: partner.name, avatar: partner.avatar || null };
-            break;
-          }
-        }
         users.push({
           userId, name: data.name, status: data.status,
           avatar: data.avatar || null, stats: data.stats || null,
           xUsername: data.xUsername || null, walletAddress: data.walletAddress || null, appWalletAddress: data.appWalletAddress || null,
           customStatus: data.customStatus || null, publicKey: data.publicKey || null,
           autoMeet: data.autoMeet || false,
-          streaming, inCallWith,
+          streaming: streamerIndex.get(userId) || null,
+          inCallWith: callIndex.get(userId) || null,
         });
       }
     }
@@ -2289,6 +2294,25 @@ function getSocketByUserId(userId) {
   const userData = onlineUsers.get(userId);
   if (!userData) return null;
   return io.sockets.sockets.get(userData.socketId) || null;
+}
+
+// O(1) lookup: find online socket by username (uses takenNames index)
+function getSocketByName(userName) {
+  const uid = takenNames.get(userName.toLowerCase?.() || userName);
+  if (!uid) return null;
+  const d = onlineUsers.get(uid);
+  if (!d || d.disconnectedAt) return null;
+  return getSocketByUserId(uid);
+}
+
+// Emit event to all online group members (O(n) in members, not O(n*m) in members*onlineUsers)
+function emitToGroupMembers(members, event, data, excludeName) {
+  for (const m of members) {
+    if (excludeName && m.userName === excludeName) continue;
+    if (m.role === "pending") continue;
+    const s = getSocketByName(m.userName);
+    if (s) s.emit(event, data);
+  }
 }
 
 function cleanupCall(callId) {
@@ -2740,7 +2764,7 @@ io.on("connection", (socket) => {
   });
 
   // ── Streaming ────────────────────────────────────────────────────────────
-  socket.on("start-stream", async ({ title, groupId }) => {
+  socket.on("start-stream", async ({ title, groupId, gatedRoomId }) => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
     if (isUserInCall(userId) || isUserStreaming(userId)) { socket.emit("stream-error", { message: "You're already in a call or stream" }); return; }
@@ -2750,7 +2774,7 @@ io.on("connection", (socket) => {
       streamerId: userId, streamerName: userData.name,
       streamerAvatar: userData.avatar || null, streamerXUsername: userData.xUsername || null,
       title: title || `${userData.name}'s stream`, startedAt: Date.now(),
-      viewers: new Set(), groupId: groupId || null,
+      viewers: new Set(), groupId: groupId || null, gatedRoomId: gatedRoomId || null,
     });
     socket.emit("stream-started", { streamId });
     broadcastUserList();
@@ -2764,16 +2788,24 @@ io.on("connection", (socket) => {
         const notif = await dbCreateNotification(m.userName, "group_stream", userData.name, null, `Live in ${groupName}`);
         emitNotification(m.userName, notif);
         // Also emit a direct event so online members get an immediate prompt
-        for (const [uid, d] of onlineUsers) {
-          if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-            const s = getSocketByUserId(uid);
-            if (s) s.emit("group-stream-started", { groupId, streamId, streamerName: userData.name, groupName });
-            break;
-          }
-        }
+        const s = getSocketByName(m.userName);
+        if (s) s.emit("group-stream-started", { groupId, streamId, streamerName: userData.name, groupName });
       }
     }
-    console.log(`📺 ${userData.name} started streaming: ${title || userData.name + "'s stream"}${groupId ? " (group: " + groupId + ")" : ""}`);
+    // If gated room stream, notify all gated room members
+    if (gatedRoomId) {
+      const members = await dbGetGatedRoomMembers(gatedRoomId);
+      const room = await dbGetGatedRoom(gatedRoomId);
+      const roomName = room?.name || "a token-gated room";
+      for (const m of members) {
+        if (m.userName === userData.name.toLowerCase().trim()) continue;
+        const notif = await dbCreateNotification(m.userName, "group_stream", userData.name, null, `Live in ${roomName}`);
+        emitNotification(m.userName, notif);
+        const s = getSocketByName(m.userName);
+        if (s) s.emit("group-stream-started", { gatedRoomId, streamId, streamerName: userData.name, groupName: roomName });
+      }
+    }
+    console.log(`📺 ${userData.name} started streaming: ${title || userData.name + "'s stream"}${groupId ? " (group: " + groupId + ")" : ""}${gatedRoomId ? " (gated: " + gatedRoomId + ")" : ""}`);
   });
 
   socket.on("end-stream", ({ streamId }) => {
@@ -3801,15 +3833,7 @@ io.on("connection", (socket) => {
     // Upgrade from pending to member
     await dbAddGroupMember(groupId, userData.name, "member");
     // Notify all members
-    for (const m of members) {
-      for (const [uid, d] of onlineUsers) {
-        if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-          const s = getSocketByUserId(uid);
-          if (s) s.emit("group-member-joined", { groupId, userName: userData.name });
-          break;
-        }
-      }
-    }
+    emitToGroupMembers(members, "group-member-joined", { groupId, userName: userData.name });
     socket.emit("group-joined", { groupId, name: group.name });
   });
 
@@ -3820,15 +3844,7 @@ io.on("connection", (socket) => {
     socket.emit("group-left", { groupId });
     // Notify members
     const members = await dbGetGroupMembers(groupId);
-    for (const m of members) {
-      for (const [uid, d] of onlineUsers) {
-        if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-          const s = getSocketByUserId(uid);
-          if (s) s.emit("group-member-left", { groupId, userName: userData.name });
-          break;
-        }
-      }
-    }
+    emitToGroupMembers(members, "group-member-left", { groupId, userName: userData.name });
   });
 
   socket.on("group-invite", async ({ groupId, userName }) => {
@@ -3858,13 +3874,8 @@ io.on("connection", (socket) => {
     if (targetKey === userData.name.toLowerCase().trim()) return; // can't remove self
     await dbRemoveGroupMember(groupId, targetKey);
     // Notify removed user
-    for (const [uid, d] of onlineUsers) {
-      if (d.name.toLowerCase() === targetKey && !d.disconnectedAt) {
-        const s = getSocketByUserId(uid);
-        if (s) s.emit("group-removed", { groupId });
-        break;
-      }
-    }
+    const rs = getSocketByName(targetKey);
+    if (rs) rs.emit("group-removed", { groupId });
   });
 
   socket.on("delete-group", async ({ groupId }) => {
@@ -3875,15 +3886,7 @@ io.on("connection", (socket) => {
     const members = await dbGetGroupMembers(groupId);
     await dbDeleteGroup(groupId);
     // Notify all members
-    for (const m of members) {
-      for (const [uid, d] of onlineUsers) {
-        if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-          const s = getSocketByUserId(uid);
-          if (s) s.emit("group-deleted", { groupId });
-          break;
-        }
-      }
-    }
+    emitToGroupMembers(members, "group-deleted", { groupId });
   });
 
   socket.on("get-my-groups", async () => {
@@ -3925,15 +3928,7 @@ io.on("connection", (socket) => {
     const msg = { id: uuidv4().slice(0, 10), sender: userData.name.toLowerCase().trim(), senderName: userData.name, text: trimmed, image: safeImage, ts: Date.now() };
     dbSaveGroupMsg(groupId, msg).catch(e => console.warn("Group msg save error:", e.message));
     // Broadcast to all online members
-    for (const m of members) {
-      for (const [uid, d] of onlineUsers) {
-        if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-          const s = getSocketByUserId(uid);
-          if (s) s.emit("group-chat", { groupId, ...msg, avatar: userData.avatar || null });
-          break;
-        }
-      }
-    }
+    emitToGroupMembers(members, "group-chat", { groupId, ...msg, avatar: userData.avatar || null });
   });
 
   socket.on("group-history", async ({ groupId, limit, before }) => {
@@ -3969,16 +3964,8 @@ io.on("connection", (socket) => {
       const g = list.find(g => g.id === groupId);
       if (g) { g.name = newName; jsonSet("group_chats", "_all", JSON.stringify(list)); }
     }
-    // Notify all members
-    for (const m of members) {
-      for (const [uid, d] of onlineUsers) {
-        if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-          const s = getSocketByUserId(uid);
-          if (s) s.emit("group-renamed", { groupId, name: newName });
-          break;
-        }
-      }
-    }
+    // Notify all online members
+    emitToGroupMembers(members, "group-renamed", { groupId, name: newName });
   });
 
   // ── Token-gated rooms ────────────────────────────────────────────────────
@@ -4050,15 +4037,7 @@ io.on("connection", (socket) => {
     await dbAddGatedRoomMember(roomId, userData.name, addr);
     socket.emit("gated-room-joined", { roomId, name: room.name });
     // Notify existing members
-    for (const m of members) {
-      for (const [uid, d] of onlineUsers) {
-        if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-          const s = getSocketByUserId(uid);
-          if (s) s.emit("gated-room-member-joined", { roomId, userName: userData.name });
-          break;
-        }
-      }
-    }
+    emitToGroupMembers(members, "gated-room-member-joined", { roomId, userName: userData.name });
   });
 
   socket.on("leave-gated-room", async ({ roomId }) => {
@@ -4075,15 +4054,7 @@ io.on("connection", (socket) => {
     if (!room || room.creator !== userData.name.toLowerCase().trim()) { socket.emit("gated-room-error", { message: "Only creator can delete" }); return; }
     const members = await dbGetGatedRoomMembers(roomId);
     await dbDeleteGatedRoom(roomId);
-    for (const m of members) {
-      for (const [uid, d] of onlineUsers) {
-        if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-          const s = getSocketByUserId(uid);
-          if (s) s.emit("gated-room-deleted", { roomId });
-          break;
-        }
-      }
-    }
+    emitToGroupMembers(members, "gated-room-deleted", { roomId });
   });
 
   socket.on("gated-room-kick", async ({ roomId, userName }) => {
@@ -4094,13 +4065,8 @@ io.on("connection", (socket) => {
     const targetKey = (userName || "").toLowerCase().trim();
     if (targetKey === room.creator) return;
     await dbRemoveGatedRoomMember(roomId, targetKey);
-    for (const [uid, d] of onlineUsers) {
-      if (d.name.toLowerCase() === targetKey && !d.disconnectedAt) {
-        const s = getSocketByUserId(uid);
-        if (s) s.emit("gated-room-kicked", { roomId });
-        break;
-      }
-    }
+    const ks = getSocketByName(targetKey);
+    if (ks) ks.emit("gated-room-kicked", { roomId });
   });
 
   socket.on("get-my-gated-rooms", async () => {
@@ -4152,15 +4118,7 @@ io.on("connection", (socket) => {
     if (!trimmed && !safeImage) return;
     const msg = { id: uuidv4().slice(0, 10), sender: userData.name.toLowerCase().trim(), senderName: userData.name, text: trimmed, image: safeImage, ts: Date.now() };
     dbSaveGatedRoomMsg(roomId, msg).catch(e => console.warn("Gated room msg save error:", e.message));
-    for (const m of members) {
-      for (const [uid, d] of onlineUsers) {
-        if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-          const s = getSocketByUserId(uid);
-          if (s) s.emit("gated-room-chat", { roomId, ...msg, avatar: userData.avatar || null });
-          break;
-        }
-      }
-    }
+    emitToGroupMembers(members, "gated-room-chat", { roomId, ...msg, avatar: userData.avatar || null });
   });
 
   socket.on("gated-room-history", async ({ roomId, limit, before }) => {
@@ -4328,15 +4286,7 @@ io.on("connection", (socket) => {
         if (!members.find(m => m.userName === myKey)) {
           await dbAddGatedRoomMember(token.roomId, userData.name, walletAddress);
           socket.emit("gated-room-joined", { roomId: token.roomId, name: `$${token.symbol}` });
-          for (const m of members) {
-            for (const [uid, d] of onlineUsers) {
-              if (d.name.toLowerCase() === m.userName && !d.disconnectedAt) {
-                const s = getSocketByUserId(uid);
-                if (s) s.emit("gated-room-member-joined", { roomId: token.roomId, userName: userData.name });
-                break;
-              }
-            }
-          }
+          emitToGroupMembers(members, "gated-room-member-joined", { roomId: token.roomId, userName: userData.name });
         }
       } else if (type === "sell") {
         // Check if seller's balance dropped below minimum — boot if so (skip creator)

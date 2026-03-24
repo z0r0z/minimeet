@@ -2237,16 +2237,16 @@
 
     <!-- Tab switcher -->
     <div class="tab-bar" id="tab-bar">
-      <button class="tab active" id="tab-contacts" data-tab="contacts">Contacts</button>
-      <button class="tab" id="tab-feed" data-tab="feed">Feed</button>
+      <button class="tab" id="tab-contacts" data-tab="contacts">Contacts</button>
+      <button class="tab active" id="tab-feed" data-tab="feed">Feed</button>
     </div>
 
-    <div class="search-wrap" id="search-wrap">
+    <div class="search-wrap" id="search-wrap" style="display:none;">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
       <input type="text" id="search-input" class="search-input" placeholder="Search, @handle, or 0x address..." />
     </div>
-    <div id="contacts-list" class="contacts-list"></div>
-    <div id="feed-list" class="contacts-list" style="display:none;"></div>
+    <div id="contacts-list" class="contacts-list" style="display:none;"></div>
+    <div id="feed-list" class="contacts-list"></div>
 
     <!-- Public Chat -->
     <button class="chat-toggle" id="chat-toggle">
@@ -2571,7 +2571,7 @@ async function fetchTurnCredentials(retries = 2) {
   }
 }
 // Refresh TURN credentials every 10 hours
-setInterval(() => fetchTurnCredentials(), 10 * 60 * 60 * 1000);
+let turnRefreshInterval = setInterval(() => fetchTurnCredentials(), 10 * 60 * 60 * 1000);
 
 const SERVER_URL = window.location.origin;
 const COLORS = ["#E8453C","#3C7EE8","#E8A83C","#3CE88A","#A83CE8","#E83C8A","#3CE8E8","#8AE83C"];
@@ -3477,7 +3477,7 @@ function updateMyStatusDot() {
 function resetIdleTimer() {
   // Don't auto-idle if user manually set a status
   if (manualStatus) return;
-  if (isIdle && socket) {
+  if (isIdle && socket && socket.connected) {
     isIdle = false;
     myPresenceStatus = "online";
     socket.emit("set-status", { status: "online" });
@@ -3485,7 +3485,7 @@ function resetIdleTimer() {
   }
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
-    if (socket && myUserId && !manualStatus) {
+    if (socket && socket.connected && myUserId && !manualStatus) {
       isIdle = true;
       myPresenceStatus = "idle";
       socket.emit("set-status", { status: "idle" });
@@ -3508,7 +3508,7 @@ window.closeStatusOverlay = function() {
 window.saveCustomStatus = function() {
   const val = document.getElementById("status-input").value.trim().slice(0, 50);
   myCustomStatus = val || null;
-  if (socket) socket.emit("set-status", { customStatus: myCustomStatus });
+  if (socket && socket.connected) socket.emit("set-status", { customStatus: myCustomStatus });
   updateCustomStatusDisplay();
   closeStatusOverlay();
   // Refresh profile page if viewing own profile
@@ -3517,7 +3517,7 @@ window.saveCustomStatus = function() {
 window.clearCustomStatus = function() {
   myCustomStatus = null;
   document.getElementById("status-input").value = "";
-  if (socket) socket.emit("set-status", { customStatus: null });
+  if (socket && socket.connected) socket.emit("set-status", { customStatus: null });
   updateCustomStatusDisplay();
   closeStatusOverlay();
   if (profileTarget && profileIsOwn) showProfile(profileTarget);
@@ -3895,7 +3895,7 @@ function closePeerConnection() {
 
 // ── Streaming ────────────────────────────────────────────────────────────
 
-async function startStream(groupId) {
+async function startStream(groupId, gatedRoomId) {
   try {
     streamLocalStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: audioConstraints });
     $("#stream-local-video").srcObject = streamLocalStream;
@@ -3912,8 +3912,8 @@ async function startStream(groupId) {
   $("#stream-streamer-info").style.display = "none";
   $("#stream-mute-btn").style.display = "";
   $("#stream-video-btn").style.display = "";
-  const title = groupId ? `${myName}'s group stream` : `${myName}'s stream`;
-  socket.emit("start-stream", { title, groupId: groupId || undefined });
+  const title = (groupId || gatedRoomId) ? `${myName}'s group stream` : `${myName}'s stream`;
+  socket.emit("start-stream", { title, groupId: groupId || undefined, gatedRoomId: gatedRoomId || undefined });
   showScreen("stream-screen");
   updateStreamViewerCount(0);
   return true;
@@ -4121,10 +4121,7 @@ window.showReactPicker = function(e, msgId) {
   if (picker) picker.classList.toggle("active");
 };
 
-// Close picker on click outside
-document.addEventListener("click", () => {
-  document.querySelectorAll(".chat-react-picker.active").forEach(p => p.classList.remove("active"));
-});
+// Close picker on click outside (consolidated with other click-outside handlers below)
 
 window.toggleReaction = function(msgId, emoji) {
   if (!socket || !myUserId) return;
@@ -4140,9 +4137,6 @@ function toggleCardMore(btn) {
   document.querySelectorAll(".card-more-menu.active").forEach(m => m.classList.remove("active"));
   if (!wasActive) menu.classList.add("active");
 }
-document.addEventListener("click", () => {
-  document.querySelectorAll(".card-more-menu.active").forEach(m => m.classList.remove("active"));
-});
 
 function toggleOnlineDropdown(e) {
   e.stopPropagation();
@@ -4182,10 +4176,16 @@ function renderOnlineDropdown() {
   }).join("");
 }
 
-// Close online dropdown when clicking outside
+// Single consolidated click-outside handler for all dropdowns/pickers/menus/panels
 document.addEventListener("click", (e) => {
+  document.querySelectorAll(".chat-react-picker.active").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll(".card-more-menu.active").forEach(m => m.classList.remove("active"));
   const dd = document.getElementById("online-dropdown");
   if (dd && !e.target.closest("#online-count")) dd.classList.remove("active");
+  document.getElementById("msgs-panel")?.classList.remove("active");
+  document.getElementById("notif-panel")?.classList.remove("active");
+  const profileResults = document.querySelector(".profile-search-results");
+  if (profileResults && !e.target.closest(".profile-search-wrap")) profileResults.classList.remove("active");
 });
 
 function escapeHtml(text) {
@@ -4236,6 +4236,8 @@ let callChatUnread = 0;
 
 function openDM(userId, name, avatar) {
   activeGroupId = null; activeGatedRoomId = null; // clear group/gated context
+  document.getElementById("gated-share-btn")?.remove();
+  document.getElementById("gated-live-btn")?.remove();
   dmTargetUserId = userId;
   dmTargetName = name;
   // Setup header
@@ -4381,6 +4383,7 @@ async function sendDM() {
   const msg = { text: finalText, encrypted };
   if (isRich && !encrypted) { msg.text = text || ""; msg.image = image; } // plaintext with image
   if (dmTargetUserId) { msg.toUserId = dmTargetUserId; } else { msg.toName = dmTargetName; }
+  if (!socket || !socket.connected) { showToast("Not connected — try again", "error", 2000); return; }
   socket.emit("chat-dm", msg);
 }
 
@@ -4959,6 +4962,7 @@ async function startCall(userId, prepaidSeconds) {
   showScreen("call-screen");
   playRingtone();
   await startCamera();
+  if (!socket || !socket.connected) { stopRingtone(); stopCamera(); showScreen("main-screen"); showToast("Not connected — try again", "error", 2000); return; }
   socket.emit("call-user", { calleeId: userId, prepaidSeconds: prepaidSeconds || undefined });
 }
 
@@ -6139,6 +6143,7 @@ function connectSocket() {
     showToast(`Room "${name}" created`, "success");
     // Copy gate link
     navigator.clipboard.writeText(`${window.location.origin}/?gate=${roomId}`).then(() => showToast("Gate link copied to clipboard!", "success", 3000)).catch(() => {});
+    _pendingGatedRoomOpen = roomId;
     if (socket) socket.emit("get-my-gated-rooms");
   });
 
@@ -6244,9 +6249,8 @@ function connectSocket() {
   socket.on("gated-room-joined", ({ roomId, name }) => {
     document.getElementById("gate-overlay")?.remove();
     showToast(`Joined "${name}"`, "success");
+    if (!_chartTokenAddress) _pendingGatedRoomOpen = roomId;
     if (socket) socket.emit("get-my-gated-rooms");
-    // Don't navigate away if on coin page (auto-joined from buy)
-    if (!_chartTokenAddress) setTimeout(() => openGatedRoomChat(roomId), 300);
   });
 
   socket.on("gated-room-left", ({ roomId }) => {
@@ -6275,7 +6279,14 @@ function connectSocket() {
     }
   });
 
-  socket.on("my-gated-rooms", (rooms) => { myGatedRooms = rooms || []; });
+  socket.on("my-gated-rooms", (rooms) => {
+    myGatedRooms = rooms || [];
+    if (_pendingGatedRoomOpen) {
+      const rid = _pendingGatedRoomOpen;
+      _pendingGatedRoomOpen = null;
+      if (myGatedRooms.find(r => r.id === rid)) openGatedRoomChat(rid);
+    }
+  });
 
   socket.on("gated-room-chat", ({ roomId, ...msg }) => {
     if (!gatedRoomMessages.has(roomId)) gatedRoomMessages.set(roomId, []);
@@ -8027,9 +8038,7 @@ window.confirmGiftTime = function(toName, maxCredit) {
   });
   input.addEventListener("focus", () => { if (input.value.trim()) renderProfileSearch(input.value.trim()); });
   input.addEventListener("keydown", (e) => { if (e.key === "Escape") { input.value = ""; results.classList.remove("active"); } });
-  document.addEventListener("click", (e) => {
-    if (!e.target.closest(".profile-search-wrap")) results.classList.remove("active");
-  });
+  // Profile search close handled by consolidated click handler
 })();
 
 function renderProfileSearch(q) {
@@ -8567,14 +8576,19 @@ function renderMessages() {
     html += '<div style="font-size:9px;color:#555;font-family:var(--font-mono);padding:6px 8px;text-transform:uppercase;letter-spacing:0.05em;">Token-Gated</div>';
     html += myGatedRooms.map(r => {
       const color = getColor(r.name);
-      return `<div class="notif-item" onclick="openGatedRoomChat('${r.id}');document.getElementById('msgs-panel').classList.remove('active')">
-        <div style="display:flex;align-items:center;gap:8px;">
-          <div style="width:28px;height:28px;border-radius:50%;background:${color};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:12px;">🔒</div>
-          <div style="flex:1;min-width:0;">
-            <div style="font-size:12px;font-weight:600;">${escapeHtml(r.name)}</div>
-            <div style="font-size:11px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.lastSender ? escapeHtml(r.lastSender) + ": " : ""}${escapeHtml(r.lastMessage || "No messages")} · ${r.lastTime ? timeAgo(r.lastTime) : "new"}</div>
+      const pfpStyle = r.avatar ? `background-image:${safeCssUrl(r.avatar)};background-size:cover;background-position:center` : `background:${color}`;
+      const pfpInner = r.avatar ? "" : "🔒";
+      return `<div class="notif-item" style="display:flex;align-items:center;">
+        <div style="flex:1;min-width:0;cursor:pointer;" onclick="openGatedRoomChat('${r.id}');document.getElementById('msgs-panel').classList.remove('active')">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div style="width:28px;height:28px;border-radius:50%;${pfpStyle};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:12px;">${pfpInner}</div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:12px;font-weight:600;">${escapeHtml(r.name)}</div>
+              <div style="font-size:11px;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.lastSender ? escapeHtml(r.lastSender) + ": " : ""}${escapeHtml(r.lastMessage || "No messages")} · ${r.lastTime ? timeAgo(r.lastTime) : "new"}</div>
+            </div>
           </div>
         </div>
+        <button onclick="event.stopPropagation();copyGateLink('${r.id}')" title="Copy gate link" style="background:none;border:none;cursor:pointer;font-size:14px;padding:4px 6px;opacity:0.5;flex-shrink:0;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.5'">🔗</button>
       </div>`;
     }).join("");
   }
@@ -8688,6 +8702,8 @@ window.acceptGroupInvite = function(groupId) {
 
 window.openGroupChat = function(groupId) {
   activeGroupId = groupId; activeGatedRoomId = null;
+  document.getElementById("gated-share-btn")?.remove();
+  document.getElementById("gated-live-btn")?.remove();
   const group = myGroups.find(g => g.id === groupId);
   // Reuse the DM overlay for group chat
   const pfp = $("#dm-header-pfp");
@@ -8735,9 +8751,15 @@ window.goLiveInGroup = function(groupId) {
   startStream(groupId);
 };
 
+window.goLiveInGatedRoom = function(roomId) {
+  closeDM();
+  startStream(null, roomId);
+};
+
 // ── Token-gated rooms ──────────────────────────────────────────────────
 let myGatedRooms = [];
 let activeGatedRoomId = null;
+let _pendingGatedRoomOpen = null;
 let gatedRoomMessages = new Map();
 
 let _gatedRoomAvatar = null;
@@ -9183,9 +9205,36 @@ window.openGatedRoomChat = function(roomId) {
   const room = myGatedRooms.find(r => r.id === roomId);
   const pfp = $("#dm-header-pfp");
   const color = getColor(room?.name || "Room");
-  pfp.style.background = color;
-  pfp.innerHTML = "🔒";
+  if (room?.avatar) {
+    pfp.style.background = `url('${room.avatar.replace(/'/g, "\\'")}') center/cover`;
+    pfp.innerHTML = "";
+  } else {
+    pfp.style.background = color;
+    pfp.innerHTML = "🔒";
+  }
   $("#dm-header-name").textContent = room?.name || "Token-Gated Room";
+  // Add share + go live buttons in header
+  document.getElementById("gated-share-btn")?.remove();
+  document.getElementById("gated-live-btn")?.remove();
+  const headerLeft = document.querySelector(".dm-header-left");
+  const shareBtn = document.createElement("button");
+  shareBtn.id = "gated-share-btn";
+  shareBtn.title = "Copy gate link";
+  shareBtn.style.cssText = "background:none;border:none;cursor:pointer;font-size:16px;padding:4px 6px;opacity:0.6;";
+  shareBtn.textContent = "🔗";
+  shareBtn.onmouseenter = () => shareBtn.style.opacity = "1";
+  shareBtn.onmouseleave = () => shareBtn.style.opacity = "0.6";
+  shareBtn.onclick = () => copyGateLink(roomId);
+  headerLeft.appendChild(shareBtn);
+  const liveBtn = document.createElement("button");
+  liveBtn.id = "gated-live-btn";
+  liveBtn.title = "Go live in this room";
+  liveBtn.style.cssText = "background:none;border:none;cursor:pointer;font-size:14px;padding:4px 6px;opacity:0.6;color:var(--green);font-family:var(--font-mono);font-weight:600;";
+  liveBtn.textContent = "● LIVE";
+  liveBtn.onmouseenter = () => liveBtn.style.opacity = "1";
+  liveBtn.onmouseleave = () => liveBtn.style.opacity = "0.6";
+  liveBtn.onclick = () => goLiveInGatedRoom(roomId);
+  headerLeft.appendChild(liveBtn);
   const container = $("#dm-messages");
   const msgs = gatedRoomMessages.get(roomId) || [];
   container.innerHTML = msgs.length === 0 ? '<div class="dm-empty">Loading...</div>' : "";
@@ -9519,7 +9568,7 @@ $("#directory-search").addEventListener("keydown", async (e) => {
 
 // Notifications
 // Tabs (Contacts / Feed)
-let activeTab = "contacts";
+let activeTab = "feed";
 
 document.querySelectorAll(".tab").forEach(tab => {
   tab.addEventListener("click", () => {
@@ -9539,7 +9588,7 @@ document.querySelectorAll(".tab").forEach(tab => {
 });
 
 function loadGlobalFeed() {
-  if (socket) socket.emit("get-global-feed", { limit: 30 });
+  if (socket && socket.connected) socket.emit("get-global-feed", { limit: 30 });
 }
 
 // Quick post
@@ -9608,11 +9657,7 @@ $("#msgs-btn").addEventListener("click", async (e) => {
   }
 });
 
-// Close panels on click outside
-document.addEventListener("click", () => {
-  document.getElementById("msgs-panel")?.classList.remove("active");
-  document.getElementById("notif-panel")?.classList.remove("active");
-});
+// Close panels on click outside (handled by consolidated click handler above)
 
 // Notifications panel
 $("#notif-btn").addEventListener("click", (e) => {
@@ -9875,8 +9920,10 @@ $("#sign-out-link").addEventListener("click", (e) => {
   e.preventDefault();
   // Clean up any active stream
   if (currentStreamId) leaveStream();
-  // Clear live tickers
+  // Clear all timers and intervals
   if (socialScoreInterval) { clearInterval(socialScoreInterval); socialScoreInterval = null; }
+  clearTimeout(idleTimer); idleTimer = null;
+  if (typeof turnRefreshInterval !== "undefined" && turnRefreshInterval) { clearInterval(turnRefreshInterval); turnRefreshInterval = null; }
   // Clear all stored identity
   localStorage.removeItem("om_userId");
   localStorage.removeItem("om_name");
@@ -10295,6 +10342,9 @@ document.getElementById("private-room-name")?.addEventListener("keydown", (e) =>
 });
 function setupPrivateRoomSocketEvents() {
   if (!socket) return;
+  // Remove previous listeners to prevent duplicates on reconnect
+  socket.off("private-room-created").off("private-room-waiting").off("private-room-guest-joined")
+    .off("private-room-calling").off("private-room-error").off("private-room-ended");
   socket.on("private-room-created", ({ roomId }) => {
     privateRoomId = roomId; privateRoomRole = "creator";
     showPrivateRoomScreen("creator");
