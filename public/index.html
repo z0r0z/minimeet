@@ -2175,6 +2175,10 @@
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>
           <span class="toolbar-label">Go Live</span>
         </button>
+        <button class="toolbar-btn" id="explore-btn" title="Explore Coins & Rooms" onclick="showExplore()">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v12"/><path d="M6 12h12"/></svg>
+          <span class="toolbar-label">Coins</span>
+        </button>
         <button class="toolbar-btn" id="directory-btn" title="User Directory">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
           <span class="toolbar-label">Directory</span>
@@ -5167,8 +5171,12 @@ function connectSocket() {
     const postLink = localStorage.getItem("om_postLink");
     const gateLink = localStorage.getItem("om_gateLink");
     const coinLink = localStorage.getItem("om_coinLink");
+    const exploreLink = localStorage.getItem("om_exploreLink");
 
-    if (coinLink) {
+    if (exploreLink !== null) {
+      localStorage.removeItem("om_exploreLink");
+      setTimeout(() => showExplore(exploreLink || undefined), 500);
+    } else if (coinLink) {
       localStorage.removeItem("om_coinLink");
       setTimeout(() => showTokenChart(coinLink), 500);
     } else if (gateLink) {
@@ -6212,7 +6220,11 @@ function connectSocket() {
   });
 
   socket.on("token-activity", ({ tokenAddress, trades }) => {
-    if (_chartTokenAddress === tokenAddress) renderActivityList(trades);
+    if (_chartTokenAddress === tokenAddress) {
+      renderActivityList(trades);
+      const actEl = document.getElementById("chart-activity-list");
+      if (actEl) actEl._trades = trades || [];
+    }
   });
 
   socket.on("token-earnings", ({ tokenAddress, totalETH, totalTrades, totalBuys, totalSells }) => {
@@ -6226,11 +6238,18 @@ function connectSocket() {
 
   socket.on("token-trade", (trade) => {
     if (_chartTokenAddress === trade.tokenAddress) {
-      // Prepend to activity list if visible
+      // Update activity list (whether visible or not)
       const actEl = document.getElementById("chart-activity-list");
-      if (actEl && document.getElementById("coin-section-activity")?.style.display !== "none") {
-        renderActivityList([trade, ...(actEl._trades || [])]);
-        actEl._trades = [trade, ...(actEl._trades || [])].slice(0, 50);
+      if (actEl) {
+        if (!actEl._trades) actEl._trades = [];
+        actEl._trades = [trade, ...actEl._trades].slice(0, 50);
+        renderActivityList(actEl._trades);
+      }
+      // Refresh holders and chart from server
+      if (socket) {
+        socket.emit("get-token-holders", { tokenAddress: _chartTokenAddress });
+        socket.emit("get-token-chart", { tokenAddress: _chartTokenAddress });
+        socket.emit("get-token-earnings", { tokenAddress: _chartTokenAddress });
       }
     }
   });
@@ -6286,6 +6305,9 @@ function connectSocket() {
       _pendingGatedRoomOpen = null;
       if (myGatedRooms.find(r => r.id === rid)) openGatedRoomChat(rid);
     }
+    // Refresh chart chat input if coin page is open
+    const chartOverlay = document.getElementById("token-chart-overlay");
+    if (chartOverlay?.dataset?.roomId) updateChartChatInput(chartOverlay.dataset.roomId);
   });
 
   socket.on("gated-room-chat", ({ roomId, ...msg }) => {
@@ -6771,7 +6793,7 @@ window.showTokenChart = function(tokenAddress) {
     </div>
     <div id="chart-token-info" style="font-size:11px;color:var(--text-muted);margin-bottom:8px;"></div>
     <div id="chart-price-header" style="margin-bottom:10px;display:flex;align-items:baseline;"></div>
-    <canvas id="token-chart-canvas" width="440" height="180" style="width:100%;height:180px;border-radius:6px;background:var(--surface-hover);margin-bottom:12px;"></canvas>
+    <canvas id="token-chart-canvas" width="440" height="200" style="width:100%;height:200px;border-radius:6px;background:var(--surface-hover);margin-bottom:12px;"></canvas>
     <div id="chart-curve-stats" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:11px;"></div>
     <div id="chart-earnings" style="display:none;margin-top:8px;padding:8px;background:var(--surface-hover);border-radius:6px;font-size:11px;"></div>
     <div id="chart-graduate" style="display:none;margin-top:12px;"></div>
@@ -6820,7 +6842,7 @@ window.showTokenChart = function(tokenAddress) {
       </div>
       <div id="trade-status" style="display:none;font-size:11px;color:var(--text-muted);text-align:center;margin-top:6px;"></div>
     </div>
-    <div id="chart-actions" style="margin-top:10px;display:flex;gap:8px;"></div>
+    <div id="chart-actions" style="margin-top:8px;display:flex;gap:6px;align-items:center;justify-content:center;"></div>
     <div style="margin-top:12px;">
       <div style="display:flex;gap:0;border-bottom:1px solid var(--border);">
         <button class="coin-section-tab active" onclick="switchCoinSection('chat')" id="coin-tab-chat" style="flex:1;padding:8px;background:none;border:none;border-bottom:2px solid var(--text);color:var(--text);font-size:11px;font-family:var(--font-mono);cursor:pointer;">Chat</button>
@@ -6951,7 +6973,10 @@ async function ensureAppWalletFunded(requiredWei, label) {
       ${hasExternal ? `<button id="fund-transfer-btn" style="width:100%;padding:12px;background:#4CAF50;border:none;border-radius:8px;color:#fff;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px;font-family:var(--font-mono);">Send ${parseFloat(ethNeeded).toFixed(5)} ETH from wallet</button>` : ""}
       <div style="background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:12px;">
         <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">${hasExternal ? "Or send manually to" : "Send ETH to this address"}</div>
-        <div style="font-size:11px;font-family:var(--font-mono);word-break:break-all;user-select:all;color:var(--text);cursor:pointer;" onclick="navigator.clipboard.writeText('${myAppWallet.address}');this.style.color='var(--green)';setTimeout(()=>this.style.color='var(--text)',1500)" title="Click to copy">${escapeHtml(myAppWallet.address)}</div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div style="font-size:11px;font-family:var(--font-mono);word-break:break-all;user-select:all;color:var(--text);flex:1;">${escapeHtml(myAppWallet.address)}</div>
+          <button onclick="navigator.clipboard.writeText('${myAppWallet.address}');this.textContent='Copied';this.style.color='var(--green)';setTimeout(()=>{this.textContent='Copy';this.style.color='var(--text-muted)'},1500)" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--text-muted);font-size:10px;cursor:pointer;padding:3px 8px;white-space:nowrap;font-family:var(--font-mono);flex-shrink:0;">Copy</button>
+        </div>
       </div>
       <div style="font-size:10px;color:var(--text-muted);margin-bottom:14px;" id="fund-status">Waiting for funds...</div>
       <button onclick="document.getElementById('fund-wallet-overlay')?.remove()" id="fund-cancel-btn" style="width:100%;padding:8px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);font-size:12px;cursor:pointer;">Cancel</button>
@@ -7167,10 +7192,12 @@ window.executeBuy = async function() {
     btn.textContent = "Confirm...";
     const calldata = iface.encodeFunctionData("buyExactIn", [_chartTokenAddress, minOut, _deadline()]);
     const tx = await signer.sendTransaction({ to: CURVE_SALE_ADDRESS, data: calldata, value });
-    btn.textContent = "Mining..."; statusEl.textContent = tx.hash.slice(0, 12) + "...";
+    btn.textContent = "Mining...";
+    statusEl.innerHTML = `Pending... <a href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:underline;">view tx</a>`;
     await tx.wait();
     showToast("Buy successful!", "success");
-    statusEl.style.display = "none";
+    statusEl.innerHTML = `<span style="color:#4CAF50">Buy confirmed!</span> <a href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:underline;font-size:10px;">etherscan</a>`;
+    setTimeout(() => { statusEl.style.display = "none"; }, 5000);
     document.getElementById("trade-buy-amount").value = "";
     document.getElementById("trade-buy-quote").textContent = "";
     _userTokenBalance = null;
@@ -7231,10 +7258,12 @@ window.executeSell = async function() {
     const iface = new ethers.Interface(CURVE_SALE_LAUNCH_ABI);
     const calldata = iface.encodeFunctionData("sell", [_chartTokenAddress, amount, minProceeds, _deadline()]);
     const tx = await signer.sendTransaction({ to: CURVE_SALE_ADDRESS, data: calldata });
-    btn.textContent = "Mining..."; statusEl.textContent = tx.hash.slice(0, 12) + "...";
+    btn.textContent = "Mining...";
+    statusEl.innerHTML = `Pending... <a href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:underline;">view tx</a>`;
     await tx.wait();
     showToast("Sell successful!", "success");
-    statusEl.style.display = "none";
+    statusEl.innerHTML = `<span style="color:#4CAF50">Sell confirmed!</span> <a href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:underline;font-size:10px;">etherscan</a>`;
+    setTimeout(() => { statusEl.style.display = "none"; }, 5000);
     document.getElementById("trade-sell-amount").value = "";
     document.getElementById("trade-sell-quote").textContent = "";
     _userTokenBalance = null;
@@ -7252,6 +7281,37 @@ window.executeSell = async function() {
   }
   btn.disabled = false; btn.textContent = "Sell";
 };
+
+function formatTokenMin(minBalance, tokenType) {
+  if (tokenType === "NFT") return minBalance + " NFT(s)";
+  try {
+    const n = BigInt(minBalance);
+    const whole = n / 10n**18n;
+    const frac = n % 10n**18n;
+    if (frac === 0n) return whole.toString() + " tokens";
+    const fracStr = frac.toString().padStart(18, "0").replace(/0+$/, "");
+    return whole + "." + fracStr + " tokens";
+  } catch { return minBalance + " tokens"; }
+}
+
+function updateChartChatInput(roomId) {
+  const input = document.getElementById("chart-chat-input");
+  const sendBtn = input?.nextElementSibling;
+  if (!input) return;
+  const isMember = roomId && myGatedRooms.find(r => r.id === roomId);
+  if (isMember) {
+    input.disabled = false;
+    input.placeholder = "Say something...";
+    input.style.opacity = "1";
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = "1"; }
+  } else {
+    input.disabled = true;
+    input.placeholder = "Buy tokens to unlock chat";
+    input.style.opacity = "0.5";
+    input.value = "";
+    if (sendBtn) { sendBtn.disabled = true; sendBtn.style.opacity = "0.5"; }
+  }
+}
 
 window.sendChartChat = function() {
   if (!_chartTokenAddress || !socket) return;
@@ -7348,7 +7408,7 @@ function handleTokenChart(data) {
     ctx.fillText(obs.length === 0 ? "No trades yet" : "Waiting for more trades...", w / 2, h / 2 - 8);
     ctx.fillStyle = "#444";
     ctx.font = "10px monospace";
-    ctx.fillText("Be the first to buy", w / 2, h / 2 + 10);
+    ctx.fillText(obs.length === 0 ? "Be the first to buy" : "Chart appears after 2 trades", w / 2, h / 2 + 10);
     // Draw faint placeholder curve
     ctx.strokeStyle = "#333";
     ctx.lineWidth = 1;
@@ -7364,36 +7424,100 @@ function handleTokenChart(data) {
     ctx.setLineDash([]);
     return;
   }
+  // Layout: price area on top, volume area on bottom (separated)
+  const LEFT = 40, RIGHT = 10, TOP = 10, BOTTOM = 18;
+  const VOL_H = Math.floor(h * 0.2); // 20% for volume
+  const PRICE_BOTTOM = h - BOTTOM - VOL_H - 4; // 4px gap between price and volume
+  const priceH = PRICE_BOTTOM - TOP;
+  const volTop = h - BOTTOM - VOL_H;
+
   const prices = obs.map(o => Number(BigInt(o.price)) / 1e18);
-  const min = Math.min(...prices), max = Math.max(...prices);
-  const range = max - min || 1;
-  // Draw price line
-  ctx.strokeStyle = prices[prices.length - 1] >= prices[0] ? "#4CAF50" : "#EF5350";
+  const rawMin = Math.min(...prices), rawMax = Math.max(...prices);
+  // Add 5% padding so spikes don't pin to edges
+  const pad = (rawMax - rawMin) * 0.05 || rawMax * 0.05 || 1;
+  const min = rawMin - pad, max = rawMax + pad;
+  const range = max - min;
+
+  // Helper: map price to Y in price area
+  const priceY = (p) => TOP + priceH - ((p - min) / range) * priceH;
+  // Helper: map index to X
+  const idxX = (i) => LEFT + (i / Math.max(obs.length - 1, 1)) * (w - LEFT - RIGHT);
+
+  // Draw subtle horizontal grid lines (3 levels)
+  ctx.strokeStyle = "rgba(255,255,255,0.04)";
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 2; g++) {
+    const gy = TOP + (g / 2) * priceH;
+    ctx.beginPath(); ctx.moveTo(LEFT, gy); ctx.lineTo(w - RIGHT, gy); ctx.stroke();
+  }
+
+  // Draw volume bars (below price, in separate zone)
+  const volumes = obs.map(o => Number(BigInt(o.volume)));
+  const maxVol = Math.max(...volumes) || 1;
+  for (let i = 0; i < obs.length; i++) {
+    const x = idxX(i);
+    const barH = Math.max(1, (volumes[i] / maxVol) * VOL_H);
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = obs[i].isSell ? "#EF5350" : "#4CAF50";
+    ctx.fillRect(x - 1, h - BOTTOM - barH, 3, barH);
+  }
+  ctx.globalAlpha = 1;
+
+  // Draw price line with gradient fill
+  const lineColor = prices[prices.length - 1] >= prices[0] ? "#4CAF50" : "#EF5350";
+  ctx.strokeStyle = lineColor;
   ctx.lineWidth = 2;
   ctx.beginPath();
   for (let i = 0; i < prices.length; i++) {
-    const x = 10 + (i / Math.max(prices.length - 1, 1)) * (w - 20);
-    const y = h - 10 - ((prices[i] - min) / range) * (h - 30);
+    const x = idxX(i);
+    const y = priceY(prices[i]);
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   }
   ctx.stroke();
-  // Draw volume bars
-  const volumes = obs.map(o => Number(BigInt(o.volume)));
-  const maxVol = Math.max(...volumes) || 1;
-  ctx.globalAlpha = 0.15;
-  for (let i = 0; i < obs.length; i++) {
-    const x = 10 + (i / Math.max(obs.length - 1, 1)) * (w - 20);
-    const barH = (volumes[i] / maxVol) * (h * 0.3);
-    ctx.fillStyle = obs[i].isSell ? "#EF5350" : "#4CAF50";
-    ctx.fillRect(x - 1, h - barH, 3, barH);
+  // Gradient fill under line
+  const grad = ctx.createLinearGradient(0, TOP, 0, PRICE_BOTTOM);
+  grad.addColorStop(0, lineColor + "18");
+  grad.addColorStop(1, lineColor + "02");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  for (let i = 0; i < prices.length; i++) {
+    const x = idxX(i);
+    const y = priceY(prices[i]);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   }
-  ctx.globalAlpha = 1;
-  // Draw labels
-  ctx.fillStyle = "#888";
-  ctx.font = "9px monospace";
-  ctx.textAlign = "left";
-  ctx.fillText(formatEthPrice(max), 2, 12);
-  ctx.fillText(formatEthPrice(min), 2, h - 2);
+  ctx.lineTo(idxX(prices.length - 1), PRICE_BOTTOM);
+  ctx.lineTo(idxX(0), PRICE_BOTTOM);
+  ctx.closePath();
+  ctx.fill();
+
+  // Y-axis labels (per 1M to match header)
+  ctx.fillStyle = "#555";
+  ctx.font = "8px monospace";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.fillText(formatEthPrice(max * 1e6), LEFT - 3, TOP);
+  const mid = (max + min) / 2;
+  ctx.fillText(formatEthPrice(mid * 1e6), LEFT - 3, TOP + priceH / 2);
+  ctx.fillText(formatEthPrice(min * 1e6), LEFT - 3, PRICE_BOTTOM);
+
+  // X-axis time labels
+  if (obs[0].timestamp && obs[obs.length - 1].timestamp) {
+    ctx.fillStyle = "#444";
+    ctx.font = "8px monospace";
+    ctx.textBaseline = "top";
+    const now = Math.floor(Date.now() / 1000);
+    const fmt = (ts) => { const s = now - ts; if (s < 60) return "now"; if (s < 3600) return Math.floor(s / 60) + "m"; if (s < 86400) return Math.floor(s / 3600) + "h"; return Math.floor(s / 86400) + "d"; };
+    ctx.textAlign = "left";
+    ctx.fillText(fmt(obs[0].timestamp), LEFT, h - BOTTOM + 4);
+    ctx.textAlign = "right";
+    ctx.fillText(fmt(obs[obs.length - 1].timestamp), w - RIGHT, h - BOTTOM + 4);
+    if (obs.length > 10) {
+      const midIdx = Math.floor(obs.length / 2);
+      ctx.textAlign = "center";
+      ctx.fillText(fmt(obs[midIdx].timestamp), idxX(midIdx), h - BOTTOM + 4);
+    }
+  }
+
   // Price + change header
   const lastPrice = prices[prices.length - 1];
   const firstPrice = prices[0];
@@ -7401,7 +7525,6 @@ function handleTokenChart(data) {
   const isUp = lastPrice >= firstPrice;
   const priceHeader = document.getElementById("chart-price-header");
   if (priceHeader) {
-    // Show price per 1M tokens for readability with large supplies
     const perMil = lastPrice * 1e6;
     priceHeader.innerHTML = `
       <span style="font-size:18px;font-weight:700;">${formatEthPrice(perMil)} ETH</span>
@@ -7468,18 +7591,30 @@ function handleTokenInfo(data) {
     const addr = data.tokenAddress;
     const creator = (data.creator || "unknown").toLowerCase();
     const creatorDisplay = escapeHtml(data.creator || "unknown");
-    infoEl.innerHTML = `<a href="https://etherscan.io/address/${escapeHtml(addr)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;">${addr}</a> &middot; by <span style="cursor:pointer;text-decoration:underline;" onclick="showProfile('${escapeJSAttr(creator)}')">${creatorDisplay}</span>`
-      + (data.description ? `<div style="margin-top:6px;color:var(--text);font-size:12px;line-height:1.4;">${escapeHtml(data.description)}</div>` : "");
+    const avatar = data.creatorAvatar;
+    const pfpColor = getColor(creator);
+    const pfpStyle = avatar ? `background:url('${avatar.replace(/'/g, "\\'")}') center/cover` : `background:${pfpColor}`;
+    const pfpInner = avatar ? "" : `<span style="font-family:var(--font-mono);font-size:7px;font-weight:700;color:#fff">${getInitials(creator)}</span>`;
+    infoEl.innerHTML = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+        <div style="width:20px;height:20px;border-radius:50%;${pfpStyle};display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;" onclick="showProfile('${escapeJSAttr(creator)}')">${pfpInner}</div>
+        <span style="cursor:pointer;font-size:11px;" onclick="showProfile('${escapeJSAttr(creator)}')">${creatorDisplay}</span>
+        <span style="color:var(--text-muted);font-size:10px;">&middot;</span>
+        <a href="https://etherscan.io/address/${escapeHtml(addr)}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:none;font-size:10px;font-family:var(--font-mono);">${escapeHtml(addr.slice(0,6))}...${escapeHtml(addr.slice(-4))}</a>
+      </div>`
+      + (data.description ? `<div style="color:var(--text);font-size:12px;line-height:1.4;">${escapeHtml(data.description)}</div>` : "");
   }
   // Store roomId on overlay for chat, load chat history
   if (overlay && data.roomId) {
     overlay.dataset.roomId = data.roomId;
     if (socket) socket.emit("gated-room-history", { roomId: data.roomId, limit: 50 });
   }
+  // Show/disable chat input based on room membership
+  updateChartChatInput(data.roomId);
   if (actionsEl) {
-    const shareBtn = `<button onclick="navigator.clipboard.writeText(window.location.href).then(()=>showToast('Link copied','success'))" style="padding:8px 16px;background:var(--surface-hover);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:var(--font-mono);cursor:pointer;">Share</button>`;
-    const etherscanBtn = `<button onclick="window.open('https://etherscan.io/address/${escapeHtml(data.tokenAddress)}','_blank')" style="padding:8px 16px;background:var(--surface-hover);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;font-family:var(--font-mono);cursor:pointer;">Etherscan</button>`;
-    actionsEl.innerHTML = shareBtn + etherscanBtn;
+    const shareBtn = `<span onclick="navigator.clipboard.writeText(window.location.href).then(()=>showToast('Link copied','success'))" style="color:var(--text-muted);font-size:11px;font-family:var(--font-mono);cursor:pointer;opacity:0.7;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.7'">share</span>`;
+    const dot = `<span style="color:var(--text-muted);font-size:11px;opacity:0.4;">&middot;</span>`;
+    const etherscanBtn = `<a href="https://etherscan.io/address/${escapeHtml(data.tokenAddress)}" target="_blank" rel="noopener" style="color:var(--text-muted);font-size:11px;font-family:var(--font-mono);text-decoration:none;opacity:0.7;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.7'">etherscan</a>`;
+    actionsEl.innerHTML = shareBtn + dot + etherscanBtn;
   }
 }
 
@@ -8838,9 +8973,11 @@ window.submitCreateGatedRoom = function() {
 
 // ── Explore overlay (browse coins & gated rooms) ────────────────────────────
 
-window.showExplore = function() {
+window.showExplore = function(searchQuery) {
   const existing = document.getElementById("explore-overlay");
-  if (existing) { existing.remove(); return; }
+  if (existing) { existing.remove(); if (!searchQuery) return; }
+  const urlQ = searchQuery ? `?explore=${encodeURIComponent(searchQuery)}` : "?explore";
+  window.history.pushState({ explore: searchQuery || true }, "", urlQ);
   const overlay = document.createElement("div");
   overlay.id = "explore-overlay";
   overlay.style.cssText = "position:fixed;inset:0;background:var(--bg);z-index:265;overflow-y:auto;-webkit-overflow-scrolling:touch;";
@@ -8848,10 +8985,10 @@ window.showExplore = function() {
     <div style="max-width:480px;margin:0 auto;padding:12px 0;">
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px 12px;">
         <div style="font-size:15px;font-weight:600;">Explore</div>
-        <button onclick="document.getElementById('explore-overlay')?.remove()" style="background:none;border:none;color:var(--text-muted);font-size:14px;cursor:pointer;padding:4px 8px;line-height:1;font-family:var(--font-mono);">&larr; Back</button>
+        <button onclick="document.getElementById('explore-overlay')?.remove();window.history.pushState({},'','/')" style="background:none;border:none;color:var(--text-muted);font-size:14px;cursor:pointer;padding:4px 8px;line-height:1;font-family:var(--font-mono);">&larr; Back</button>
       </div>
       <div style="padding:0 14px 10px;">
-        <input id="explore-search" type="text" placeholder="Search coins & rooms..." style="width:100%;padding:9px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box;outline:none;" autocomplete="off">
+        <input id="explore-search" type="text" placeholder="Search coins & rooms..." value="${searchQuery ? escapeHtml(searchQuery) : ""}" style="width:100%;padding:9px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box;outline:none;" autocomplete="off">
       </div>
       <div id="explore-tabs" style="display:flex;border-bottom:1px solid var(--border);padding:0 14px;">
         <button class="explore-tab active" data-tab="coins" onclick="switchExploreTab('coins')" style="flex:1;padding:8px;background:none;border:none;border-bottom:2px solid #4CAF50;color:#4CAF50;font-size:12px;font-family:var(--font-mono);cursor:pointer;">Coins</button>
@@ -9143,7 +9280,7 @@ window.showGateScreen = async function(roomId) {
     ${room.description ? `<div style="font-size:12px;color:var(--text);max-width:280px;text-align:center;line-height:1.4;">${escapeHtml(room.description)}</div>` : ""}
     <div style="font-size:12px;color:var(--text-muted);">${room.memberCount} member${room.memberCount !== 1 ? "s" : ""} · Token-gated</div>
     <div style="font-size:11px;color:#555;font-family:var(--font-mono);">${room.tokenType} · ${escapeHtml(room.tokenAddress)}</div>
-    <div style="font-size:11px;color:#555;">Min: ${escapeHtml(room.minBalance)} ${room.tokenType === "NFT" ? "NFT(s)" : "tokens"}</div>
+    <div style="font-size:11px;color:#555;">Min: ${escapeHtml(formatTokenMin(room.minBalance, room.tokenType))}</div>
     <div style="display:flex;gap:8px;margin-top:8px;">
       <button onclick="verifyAndJoinGate('${roomId}','app')" style="padding:10px 20px;background:var(--red);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">Verify App Wallet</button>
       <button onclick="verifyAndJoinGate('${roomId}','external')" style="padding:10px 20px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:10px;color:var(--text);cursor:pointer;font-size:13px;">External Wallet</button>
@@ -10052,11 +10189,14 @@ $("#back-btn").addEventListener("click", () => {
 // ── Auto-reconnect on refresh ────────────────────────────────────────────
 // Handle browser back/forward for profile URLs
 window.addEventListener("popstate", (e) => {
-  if (e.state?.profile) {
+  if (e.state?.explore) {
+    showExplore(typeof e.state.explore === "string" ? e.state.explore : undefined);
+  } else if (e.state?.profile) {
     showProfile(e.state.profile);
   } else if (e.state?.stream) {
     joinStream(e.state.stream);
   } else if (myUserId) {
+    document.getElementById("explore-overlay")?.remove();
     document.title = "minimeet.cc";
     showScreen("contacts-screen");
   }
@@ -10163,6 +10303,12 @@ window.addEventListener("load", async () => {
       localStorage.setItem("om_coinLink", coinAddr);
       window.history.replaceState({}, "", "/");
     }
+  }
+
+  if (params.has("explore")) {
+    const exploreQuery = params.get("explore") || "";
+    localStorage.setItem("om_exploreLink", exploreQuery);
+    window.history.replaceState({}, "", "/");
   }
 
   if (params.get("stream")) {

@@ -4030,7 +4030,7 @@ io.on("connection", (socket) => {
     }
     const minRequired = BigInt(room.minBalance);
     if (balance < minRequired) {
-      const needed = room.tokenType === "NFT" ? `${minRequired} NFT(s)` : `${minRequired} tokens`;
+      const needed = room.tokenType === "NFT" ? `${minRequired} NFT(s)` : `${ethers.formatUnits(minRequired, 18)} tokens`;
       socket.emit("gated-room-error", { message: `Insufficient balance. Need ${needed}.` });
       return;
     }
@@ -4253,7 +4253,17 @@ io.on("connection", (socket) => {
       dbGetLaunchedToken(tokenAddress),
       getCurveState(tokenAddress)
     ]);
-    socket.emit("token-info", { tokenAddress, ...(dbToken || {}), curve: state });
+    // Attach creator's live avatar
+    let creatorAvatar = dbToken?.image || null;
+    if (dbToken?.creator) {
+      const cuid = takenNames.get(dbToken.creator.toLowerCase().trim());
+      const cdata = cuid ? onlineUsers.get(cuid) : null;
+      if (cdata?.avatar) creatorAvatar = cdata.avatar;
+      else if (!creatorAvatar && supabase) {
+        try { const { data: p } = await supabase.from("users").select("avatar").eq("name", dbToken.creator).single(); if (p?.avatar) creatorAvatar = p.avatar; } catch {}
+      }
+    }
+    socket.emit("token-info", { tokenAddress, ...(dbToken || {}), creatorAvatar, curve: state });
   });
 
   socket.on("record-trade", async ({ tokenAddress, type, tokenAmount, ethAmount, txHash }) => {
