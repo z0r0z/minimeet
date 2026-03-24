@@ -1215,6 +1215,24 @@ async function dbGetGatedRoomLastMsg(roomId) {
   try { const msgs = stored ? JSON.parse(stored) : []; return msgs.length > 0 ? msgs[msgs.length - 1] : null; } catch { return null; }
 }
 
+async function dbGetAllGatedRooms(limit = 50, offset = 0) {
+  if (supabase) {
+    try {
+      const { data } = await supabase.from("gated_rooms").select("*").order("created_at", { ascending: false }).range(offset, offset + limit - 1);
+      if (!data) return [];
+      // Batch-fetch member counts
+      const roomIds = data.map(d => d.id);
+      const { data: members } = await supabase.from("gated_room_members").select("room_id").in("room_id", roomIds);
+      const counts = {};
+      for (const m of (members || [])) counts[m.room_id] = (counts[m.room_id] || 0) + 1;
+      return data.map(d => ({ id: d.id, name: d.name, creator: d.creator, tokenAddress: d.token_address, tokenType: d.token_type, minBalance: d.min_balance, avatar: d.avatar || null, description: d.description || null, memberCount: counts[d.id] || 0, createdAt: new Date(d.created_at).getTime() }));
+    } catch {}
+    return [];
+  }
+  const stored = jsonGet("gated_rooms", "_all");
+  try { const list = stored ? JSON.parse(stored) : []; return list.sort((a, b) => b.createdAt - a.createdAt).slice(offset, offset + limit).map(r => ({ ...r, memberCount: r.members?.length || 0 })); } catch { return []; }
+}
+
 // ─── Launched tokens (coin launchpad) ────────────────────────────────────────
 
 async function dbCreateLaunchedToken(id, creator, tokenAddress, name, symbol, image, roomId, description) {
@@ -4087,6 +4105,14 @@ io.on("connection", (socket) => {
     socket.emit("my-gated-rooms", enriched.sort((a, b) => (b.lastTime || 0) - (a.lastTime || 0)));
   });
 
+  socket.on("browse-rooms", async ({ limit, offset } = {}) => {
+    if (!rateLimit(socket, "browse-rooms", 5, 10_000)) return;
+    const safeLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 50);
+    const safeOffset = Math.max(parseInt(offset) || 0, 0);
+    const rooms = await dbGetAllGatedRooms(safeLimit, safeOffset);
+    socket.emit("browse-rooms", { rooms, hasMore: rooms.length === safeLimit });
+  });
+
   socket.on("gated-room-chat", async ({ roomId, text, image }) => {
     if (!rateLimit(socket, "gated-room-chat", 10, 10_000)) return;
     const userId = socket.userId; if (!userId) return;
@@ -4223,9 +4249,16 @@ io.on("connection", (socket) => {
   });
 
   socket.on("get-launched-tokens", async ({ limit, offset } = {}) => {
+    if (!rateLimit(socket, "get-launched-tokens", 5, 10_000)) return;
     const safeLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 50);
     const safeOffset = Math.max(parseInt(offset) || 0, 0);
     const tokens = await dbGetAllLaunchedTokens(safeLimit, safeOffset);
+    // Batch-fetch on-chain data so coin cards show price + mini charts
+    if (tokens.length > 0) {
+      const addrs = tokens.map(t => t.tokenAddress);
+      const chainData = await getMultiTokenSummary(addrs);
+      for (const t of tokens) t.chainData = chainData[t.tokenAddress] || null;
+    }
     socket.emit("launched-tokens", { tokens, hasMore: tokens.length === safeLimit });
   });
 

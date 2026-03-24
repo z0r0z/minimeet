@@ -5079,7 +5079,7 @@ function connectSocket() {
     autoMeetCooldownHours = cooldownHours || 24;
     updateAutoMeetUI();
     // Fetch all initial data in one request
-    if (socket) { socket.emit("init-data"); socket.emit("get-my-groups"); socket.emit("get-my-gated-rooms"); }
+    if (socket) { socket.emit("init-data"); socket.emit("get-my-groups"); socket.emit("get-my-gated-rooms"); socket.emit("get-launched-tokens", { limit: 50, offset: 0 }); socket.emit("browse-rooms", { limit: 50, offset: 0 }); }
     if (reconnected) showToast("Reconnected", "success", 1500);
     // Re-sync presence status after reconnect (server defaults to "online")
     if (manualStatus && myPresenceStatus !== "online" && socket) {
@@ -6234,6 +6234,17 @@ function connectSocket() {
     }
   });
 
+  // ── Explore / browse data ─────────────────────────────────────────────
+  socket.on("launched-tokens", ({ tokens, hasMore }) => {
+    window._browseTokens = tokens || [];
+    renderExploreContent();
+  });
+
+  socket.on("browse-rooms", ({ rooms, hasMore }) => {
+    window._browseRooms = rooms || [];
+    renderExploreContent();
+  });
+
   socket.on("gated-room-joined", ({ roomId, name }) => {
     document.getElementById("gate-overlay")?.remove();
     showToast(`Joined "${name}"`, "success");
@@ -6741,6 +6752,7 @@ function drawMiniChart(canvas, observations) {
 let _chartTokenAddress = null;
 window.showTokenChart = function(tokenAddress) {
   _chartTokenAddress = tokenAddress;
+  document.getElementById("explore-overlay")?.remove();
   const existing = document.getElementById("token-chart-overlay");
   if (existing) existing.remove();
   window.history.pushState({ coin: tokenAddress }, "", `/?coin=${tokenAddress}`);
@@ -8072,6 +8084,42 @@ function renderProfileSearch(q) {
       </div>`;
     }
   }
+  // Token-gated rooms
+  const matchedRooms = (typeof myGatedRooms !== "undefined" ? myGatedRooms : []).filter(r =>
+    (r.name || "").toLowerCase().includes(lower)
+  ).slice(0, 4);
+  if (matchedRooms.length > 0) {
+    for (const r of matchedRooms) {
+      const pfpStyle = r.avatar ? `background-image:${safeCssUrl(r.avatar)}` : `background:${getColor(r.name)}`;
+      const pfpInner = r.avatar ? "" : `<span style="font-size:9px;">&#128274;</span>`;
+      html += `<div class="profile-search-item" onclick="document.getElementById('profile-search-results').classList.remove('active');document.getElementById('profile-search-input').value='';openGatedRoomChat('${escapeJSAttr(r.id)}')">
+        <div class="profile-search-pfp" style="${pfpStyle}">${pfpInner}</div>
+        <div class="profile-search-info">
+          <div class="profile-search-name">${escapeHtml(r.name)}</div>
+          <div class="profile-search-meta">token-gated · ${r.memberCount || 0} members</div>
+        </div>
+      </div>`;
+    }
+  }
+  // Launched coins (search from browse cache)
+  const matchedCoins = (typeof window._browseTokens !== "undefined" ? window._browseTokens : []).filter(t =>
+    (t.name || "").toLowerCase().includes(lower) ||
+    (t.symbol || "").toLowerCase().includes(lower) ||
+    (t.creator || "").toLowerCase().includes(lower)
+  ).slice(0, 4);
+  if (matchedCoins.length > 0) {
+    for (const t of matchedCoins) {
+      const pfpStyle = t.image ? `background-image:${safeCssUrl(t.image)}` : `background:${getColor(t.name)}`;
+      const pfpInner = t.image ? "" : `<span style="font-size:9px;font-weight:700;color:#fff">${(t.symbol || "").slice(0,2)}</span>`;
+      html += `<div class="profile-search-item" onclick="document.getElementById('profile-search-results').classList.remove('active');document.getElementById('profile-search-input').value='';showTokenChart('${escapeJSAttr(t.tokenAddress)}')">
+        <div class="profile-search-pfp" style="${pfpStyle}">${pfpInner}</div>
+        <div class="profile-search-info">
+          <div class="profile-search-name">$${escapeHtml(t.symbol)}</div>
+          <div class="profile-search-meta">coin · by ${escapeHtml(t.creator)}</div>
+        </div>
+      </div>`;
+    }
+  }
   if (!html) {
     html = `<div style="padding:12px;text-align:center;font-size:12px;color:var(--text-muted);">No results</div>`;
   }
@@ -8502,6 +8550,9 @@ function renderMessages() {
     <button onclick="showCreateGroup();document.getElementById('msgs-panel').classList.remove('active')" style="flex:1;padding:6px;background:none;border:1px dashed rgba(255,255,255,0.15);border-radius:6px;color:var(--text-muted);font-size:11px;font-family:var(--font-mono);cursor:pointer;">+ Group</button>
     <button onclick="showCreateGatedRoom();document.getElementById('msgs-panel').classList.remove('active')" style="flex:1;padding:6px;background:none;border:1px dashed rgba(255,255,255,0.15);border-radius:6px;color:var(--text-muted);font-size:11px;font-family:var(--font-mono);cursor:pointer;">🔒 Token Gate</button>
     <button onclick="showLaunchToken();document.getElementById('msgs-panel').classList.remove('active')" style="flex:1;padding:6px;background:none;border:1px solid rgba(76,175,80,0.3);border-radius:6px;color:#4CAF50;font-size:11px;font-family:var(--font-mono);cursor:pointer;">&#9650; Launch Coin</button>
+  </div>
+  <div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);">
+    <button onclick="showExplore();document.getElementById('msgs-panel').classList.remove('active')" style="width:100%;padding:6px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:6px;color:var(--text-muted);font-size:11px;font-family:var(--font-mono);cursor:pointer;transition:background 0.15s;" onmouseover="this.style.background='var(--surface-hover)'" onmouseout="this.style.background='rgba(255,255,255,0.03)'">&#9776; Explore Coins & Rooms</button>
   </div>`;
   // Groups
   if (myGroups.length > 0) {
@@ -8770,6 +8821,118 @@ window.submitCreateGatedRoom = function() {
   _gatedRoomAvatar = null;
   document.getElementById("create-gated-overlay")?.remove();
 };
+
+// ── Explore overlay (browse coins & gated rooms) ────────────────────────────
+
+window.showExplore = function() {
+  const existing = document.getElementById("explore-overlay");
+  if (existing) { existing.remove(); return; }
+  const overlay = document.createElement("div");
+  overlay.id = "explore-overlay";
+  overlay.style.cssText = "position:fixed;inset:0;background:var(--bg);z-index:265;overflow-y:auto;-webkit-overflow-scrolling:touch;";
+  overlay.innerHTML = `
+    <div style="max-width:480px;margin:0 auto;padding:12px 0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 14px 12px;">
+        <div style="font-size:15px;font-weight:600;">Explore</div>
+        <button onclick="document.getElementById('explore-overlay')?.remove()" style="background:none;border:none;color:var(--text-muted);font-size:14px;cursor:pointer;padding:4px 8px;line-height:1;font-family:var(--font-mono);">&larr; Back</button>
+      </div>
+      <div style="padding:0 14px 10px;">
+        <input id="explore-search" type="text" placeholder="Search coins & rooms..." style="width:100%;padding:9px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;box-sizing:border-box;outline:none;" autocomplete="off">
+      </div>
+      <div id="explore-tabs" style="display:flex;border-bottom:1px solid var(--border);padding:0 14px;">
+        <button class="explore-tab active" data-tab="coins" onclick="switchExploreTab('coins')" style="flex:1;padding:8px;background:none;border:none;border-bottom:2px solid #4CAF50;color:#4CAF50;font-size:12px;font-family:var(--font-mono);cursor:pointer;">Coins</button>
+        <button class="explore-tab" data-tab="rooms" onclick="switchExploreTab('rooms')" style="flex:1;padding:8px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);font-size:12px;font-family:var(--font-mono);cursor:pointer;">Token-Gated Rooms</button>
+      </div>
+      <div id="explore-content" style="min-height:200px;">
+        <div style="padding:40px 14px;text-align:center;font-size:12px;color:var(--text-muted);">Loading...</div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  // Fetch data
+  if (socket) {
+    socket.emit("get-launched-tokens", { limit: 50, offset: 0 });
+    socket.emit("browse-rooms", { limit: 50, offset: 0 });
+  }
+  // Search filter
+  const searchInput = document.getElementById("explore-search");
+  let debounce = null;
+  searchInput.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => renderExploreContent(), 100);
+  });
+};
+
+let _exploreTab = "coins";
+window.switchExploreTab = function(tab) {
+  _exploreTab = tab;
+  document.querySelectorAll("#explore-tabs .explore-tab").forEach(el => {
+    const active = el.dataset.tab === tab;
+    el.style.borderBottomColor = active ? "#4CAF50" : "transparent";
+    el.style.color = active ? "#4CAF50" : "var(--text-muted)";
+  });
+  renderExploreContent();
+};
+
+function renderExploreContent() {
+  const container = document.getElementById("explore-content");
+  if (!container) return;
+  const q = (document.getElementById("explore-search")?.value || "").toLowerCase().trim();
+  let html = "";
+  if (_exploreTab === "coins") {
+    let tokens = window._browseTokens || [];
+    if (q) tokens = tokens.filter(t =>
+      (t.name || "").toLowerCase().includes(q) ||
+      (t.symbol || "").toLowerCase().includes(q) ||
+      (t.creator || "").toLowerCase().includes(q) ||
+      (t.description || "").toLowerCase().includes(q)
+    );
+    if (tokens.length === 0) {
+      html = `<div style="padding:40px 14px;text-align:center;font-size:12px;color:var(--text-muted);">No coins found</div>`;
+    } else {
+      html = tokens.map(t => renderCoinCard(t)).join("");
+    }
+  } else {
+    let rooms = window._browseRooms || [];
+    if (q) rooms = rooms.filter(r =>
+      (r.name || "").toLowerCase().includes(q) ||
+      (r.creator || "").toLowerCase().includes(q) ||
+      (r.description || "").toLowerCase().includes(q)
+    );
+    if (rooms.length === 0) {
+      html = `<div style="padding:40px 14px;text-align:center;font-size:12px;color:var(--text-muted);">No rooms found</div>`;
+    } else {
+      html = rooms.map(r => {
+        const color = getColor(r.name);
+        const avatarStyle = r.avatar ? `background-image:${safeCssUrl(r.avatar)};background-size:cover;background-position:center;` : `background:${color};display:flex;align-items:center;justify-content:center;`;
+        const avatarInner = r.avatar ? "" : `<span style="font-size:14px;">&#128274;</span>`;
+        const shortAddr = r.tokenAddress ? r.tokenAddress.slice(0, 6) + "..." + r.tokenAddress.slice(-4) : "";
+        const ago = formatTimeAgo(r.createdAt);
+        return `<div onclick="document.getElementById('explore-overlay')?.remove();showGateScreen('${escapeJSAttr(r.id)}')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;transition:background 0.1s;" onmouseover="this.style.background='var(--surface-hover)'" onmouseout="this.style.background=''">
+          <div style="width:36px;height:36px;border-radius:50%;flex-shrink:0;overflow:hidden;${avatarStyle}">${avatarInner}</div>
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:baseline;gap:6px;">
+              <span style="font-weight:600;font-size:13px;">${escapeHtml(r.name)}</span>
+              <span style="color:var(--text-muted);font-size:11px;margin-left:auto;">${r.memberCount} member${r.memberCount !== 1 ? "s" : ""}</span>
+            </div>
+            ${r.description ? `<div style="font-size:11px;color:var(--text);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(r.description)}</div>` : ""}
+            <div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${r.tokenType} &middot; ${shortAddr} &middot; by ${escapeHtml(r.creator)} &middot; ${ago}</div>
+          </div>
+        </div>`;
+      }).join("");
+    }
+  }
+  container.innerHTML = html;
+  // Draw mini charts for coins
+  if (_exploreTab === "coins") {
+    (window._browseTokens || []).forEach(t => {
+      if (t.chainData?.observations) {
+        const canvas = container.querySelector(`.coin-mini-chart[data-token="${t.tokenAddress}"]`);
+        if (canvas) drawMiniChart(canvas, t.chainData.observations);
+      }
+    });
+  }
+}
 
 // ── Coin Launchpad ──────────────────────────────────────────────────────────
 
