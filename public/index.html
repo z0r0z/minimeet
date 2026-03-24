@@ -9346,8 +9346,7 @@ window.graduateToken = async function(tokenAddress) {
 
 window.showGateScreen = async function(roomId) {
   // If already a member, go straight to chat
-  const existing = myGatedRooms.find(r => r.id === roomId);
-  if (existing) { openGatedRoomChat(roomId); return; }
+  if (myGatedRooms.find(r => r.id === roomId)) { openGatedRoomChat(roomId); return; }
   // Fetch room info
   let room;
   try {
