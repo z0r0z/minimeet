@@ -1334,7 +1334,7 @@ async function dbGetLaunchedToken(tokenAddress) {
   if (supabase) {
     try {
       const { data } = await supabase.from("launched_tokens").select("*").eq("token_address", addr).single();
-      if (data) return { id: data.id, creator: data.creator, tokenAddress: data.token_address, name: data.name, symbol: data.symbol, image: data.image, roomId: data.room_id, description: data.description || null, createdAt: new Date(data.created_at).getTime() };
+      if (data) return { id: data.id, creator: data.creator, tokenAddress: data.token_address, name: data.name, symbol: data.symbol, image: data.image, roomId: data.room_id, description: data.description || null, txHash: data.tx_hash || null, createdAt: new Date(data.created_at).getTime() };
     } catch {}
     return null;
   }
@@ -1358,13 +1358,14 @@ async function dbGetLaunchedTokensByCreator(creator) {
 async function dbGetAllLaunchedTokens(limit = 50, offset = 0) {
   if (supabase) {
     try {
-      const { data } = await supabase.from("launched_tokens").select("*").order("created_at", { ascending: false }).range(offset, offset + limit - 1);
-      return (data || []).map(d => ({ id: d.id, creator: d.creator, tokenAddress: d.token_address, name: d.name, symbol: d.symbol, image: d.image, roomId: d.room_id, description: d.description || null, createdAt: new Date(d.created_at).getTime() }));
+      // Only return tokens with confirmed on-chain tx
+      const { data } = await supabase.from("launched_tokens").select("*").not("tx_hash", "is", null).order("created_at", { ascending: false }).range(offset, offset + limit - 1);
+      return (data || []).map(d => ({ id: d.id, creator: d.creator, tokenAddress: d.token_address, name: d.name, symbol: d.symbol, image: d.image, roomId: d.room_id, description: d.description || null, txHash: d.tx_hash || null, createdAt: new Date(d.created_at).getTime() }));
     } catch {}
     return [];
   }
   const stored = jsonGet("launched_tokens", "_all");
-  try { const list = stored ? JSON.parse(stored) : []; return list.sort((a, b) => b.createdAt - a.createdAt).slice(offset, offset + limit); } catch { return []; }
+  try { const list = stored ? JSON.parse(stored) : []; return list.filter(t => t.txHash).sort((a, b) => b.createdAt - a.createdAt).slice(offset, offset + limit); } catch { return []; }
 }
 
 async function dbUpdateLaunchedTokenTx(tokenAddress, txHash) {
@@ -4249,12 +4250,9 @@ io.on("connection", (socket) => {
     // Mine a vanity salt → token address starts with 0x00 (~50ms, ~256 attempts)
     const { salt: saltBytes, address: tokenAddress } = mineVanitySalt(walletAddress, coinName, coinSymbol);
 
-    // Create token-gated room automatically (minBalance = 1 token = 1e18 wei)
+    // Room + token record created on confirmation (launch-token-confirmed), not here
     const roomId = uuidv4().slice(0, 12);
-    await dbCreateGatedRoom(roomId, `$${coinSymbol}`, creatorKey, tokenAddress.toLowerCase(), "ERC20", ethers.parseUnits("1", 18).toString(), avatar, walletAddress.toLowerCase(), desc);
-    // Store launched token record
     const tokenId = uuidv4().slice(0, 12);
-    await dbCreateLaunchedToken(tokenId, creatorKey, tokenAddress, coinName, coinSymbol, null, roomId, desc);
 
     // Return everything the frontend needs to submit the tx
     const p = DEFAULT_LAUNCH_PARAMS;
@@ -4268,7 +4266,7 @@ io.on("connection", (socket) => {
     };
     socket.emit("launch-token-ready", {
       tokenAddress, roomId, salt: saltBytes, tokenId,
-      name: coinName, symbol: coinSymbol, uri: metadata,
+      name: coinName, symbol: coinSymbol, uri: metadata, description: desc,
       txParams: {
         to: CURVE_SALE_ADDRESS,
         supply: p.supply.toString(),
@@ -4290,13 +4288,38 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("launch-token-confirmed", async ({ tokenAddress, txHash }) => {
+  socket.on("launch-token-confirmed", async ({ tokenAddress, txHash, roomId, tokenId, name, symbol, description }) => {
     if (!tokenAddress || !txHash) return;
     const userId = socket.userId; if (!userId) return;
-    await dbUpdateLaunchedTokenTx(tokenAddress, txHash);
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    const creatorKey = userData.name.toLowerCase().trim();
+    const walletAddress = userData.walletAddress || userData.appWalletAddress;
+    const avatar = userData.avatar || null;
+    const desc = (typeof description === "string" ? description.trim().slice(0, 280) : "") || "";
+
+    // Check if already created (idempotent — handles double-confirm)
+    const existing = await dbGetLaunchedToken(tokenAddress);
+    if (!existing) {
+      const safeRoomId = (roomId || uuidv4().slice(0, 12)).slice(0, 12);
+      const safeTokenId = (tokenId || uuidv4().slice(0, 12)).slice(0, 12);
+      const safeName = (name || userData.name).slice(0, 50);
+      const safeSymbol = (symbol || "COIN").slice(0, 10);
+      await dbCreateGatedRoom(safeRoomId, `$${safeSymbol}`, creatorKey, tokenAddress.toLowerCase(), "ERC20", ethers.parseUnits("1", 18).toString(), avatar, (walletAddress || "creator").toLowerCase(), desc);
+      await dbCreateLaunchedToken(safeTokenId, creatorKey, tokenAddress, safeName, safeSymbol, null, safeRoomId, desc);
+      await dbUpdateLaunchedTokenTx(tokenAddress, txHash);
+    } else if (!existing.txHash) {
+      await dbUpdateLaunchedTokenTx(tokenAddress, txHash);
+    }
     // Broadcast new token to all connected users
     const token = await dbGetLaunchedToken(tokenAddress);
     if (token) io.emit("new-token-launched", token);
+    // Refresh creator's gated rooms list
+    const updatedRooms = await dbGetUserGatedRooms(creatorKey);
+    const enriched = await Promise.all(updatedRooms.map(async (r) => {
+      const [members, lastMsg] = await Promise.all([dbGetGatedRoomMembers(r.id), dbGetGatedRoomLastMsg(r.id)]);
+      return { ...r, memberCount: members.length, lastMessage: lastMsg?.text?.slice(0, 50) || null, lastSender: lastMsg?.senderName || null, lastTime: lastMsg?.ts || r.createdAt };
+    }));
+    socket.emit("my-gated-rooms", enriched.sort((a, b) => (b.lastTime || 0) - (a.lastTime || 0)));
   });
 
   socket.on("get-launched-tokens", async ({ limit, offset } = {}) => {

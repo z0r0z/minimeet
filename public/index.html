@@ -7676,10 +7676,12 @@ function handleTokenChart(data) {
       gradEl.style.display = "none";
     }
   }
-  // Hide trade panel when graduated
+  // Hide/replace trade panel based on curve state
   const tradeEl = document.getElementById("chart-trade");
-  if (tradeEl && data.curve) {
-    if (data.curve.graduated) {
+  if (tradeEl) {
+    if (!data.curve || data.curve.launchTime === 0) {
+      tradeEl.innerHTML = `<div style="text-align:center;padding:12px;color:var(--text-muted);font-size:12px;">Token not yet deployed on-chain</div>`;
+    } else if (data.curve.graduated) {
       tradeEl.innerHTML = `<div style="text-align:center;padding:12px;color:var(--text-muted);font-size:12px;">${data.curve.seeded ? "Graduated — trade on DEX" : "Curve complete — awaiting LP seeding"}</div>`;
     }
   }
@@ -9330,7 +9332,7 @@ window.submitLaunchToken = async function() {
     if (receipt.status === 0) throw new Error("Transaction reverted");
 
     // Notify server of confirmation
-    socket.emit("launch-token-confirmed", { tokenAddress: response.tokenAddress, txHash: tx.hash });
+    socket.emit("launch-token-confirmed", { tokenAddress: response.tokenAddress, txHash: tx.hash, roomId: response.roomId, tokenId: response.tokenId, name: response.name, symbol: response.symbol, description: response.description });
 
     statusEl.innerHTML = `<span style="color:#4CAF50">Launched!</span> <a href="https://etherscan.io/tx/${tx.hash}" target="_blank" rel="noopener" style="color:var(--text-muted);text-decoration:underline;font-size:10px;">etherscan</a>`;
     btn.textContent = "View Coin";
