@@ -6009,6 +6009,28 @@ function connectSocket() {
     if (activeGroupId === groupId) closeDM();
   });
 
+  // When another user renames, update local references (contacts, active DM, cached messages)
+  socket.on("user-renamed", ({ oldName, newName }) => {
+    const oldKey = oldName.toLowerCase();
+    const newKey = newName.toLowerCase();
+    const idx = myContacts.indexOf(oldKey);
+    if (idx !== -1) myContacts[idx] = newKey;
+    // Re-key cached DM messages and update sender_name so display is correct
+    if (dmMessages.has(oldKey)) {
+      const msgs = dmMessages.get(oldKey);
+      for (const m of msgs) {
+        if (m.senderName && m.senderName.toLowerCase() === oldKey) m.senderName = newName;
+      }
+      dmMessages.delete(oldKey);
+      dmMessages.set(newKey, msgs);
+    }
+    if (dmTargetName && dmTargetName.toLowerCase() === oldKey) {
+      dmTargetName = newName;
+      const header = document.getElementById("dm-header-name");
+      if (header) header.textContent = newName;
+    }
+  });
+
   socket.on("group-renamed", ({ groupId, name }) => {
     const g = myGroups.find(g => g.id === groupId);
     if (g) g.name = name;
@@ -7592,7 +7614,21 @@ function handleProfileData(data) {
   // Show/hide banner edit button
   const bannerEdit = document.getElementById("profile-banner-edit");
   if (bannerEdit) bannerEdit.classList.toggle("visible", profileIsOwn);
-  $("#profile-name").textContent = data.displayName || data.username;
+  const _profileNameEl = $("#profile-name");
+  _profileNameEl.textContent = data.displayName || data.username;
+  // Allow verified users to rename by clicking their own name
+  if (profileIsOwn && (myWalletAddress || myXUsername)) {
+    const editIcon = document.createElement("span");
+    editIcon.innerHTML = ` <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="opacity:0.3;vertical-align:middle;"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+    _profileNameEl.appendChild(editIcon);
+    _profileNameEl.style.cursor = "pointer";
+    _profileNameEl.title = "Click to change name";
+    _profileNameEl.onclick = () => promptRename();
+  } else {
+    _profileNameEl.style.cursor = "";
+    _profileNameEl.title = "";
+    _profileNameEl.onclick = null;
+  }
 
   // Status dot next to name
   const statusDot = document.getElementById("profile-status-dot");
@@ -8217,6 +8253,68 @@ function updateProfileFollowBtn() {
   if (svg) svg.setAttribute("fill", isFollowing ? "currentColor" : "none");
   const textNode = btn.lastChild;
   if (textNode && textNode.nodeType === 3) textNode.textContent = isFollowing ? " Following" : " Follow";
+}
+
+// ── Rename ───────────────────────────────────────────────────────────────
+async function promptRename() {
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:250;display:flex;align-items:center;justify-content:center;padding:20px;";
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const card = document.createElement("div");
+  card.style.cssText = "background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;width:300px;max-width:90vw;box-sizing:border-box;";
+  card.innerHTML = `
+    <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Change your name</div>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:14px;">Current: ${escapeHtml(myName)}</div>
+    <input id="rename-input" type="text" maxlength="30" placeholder="New name..." value="" autocomplete="off" style="width:100%;padding:10px 12px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;box-sizing:border-box;margin-bottom:12px;">
+    <div id="rename-error" style="font-size:11px;color:#c44;margin-bottom:8px;display:none;"></div>
+    <div style="display:flex;gap:8px;">
+      <button onclick="this.closest('div[style*=fixed]').remove()" style="flex:1;padding:10px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);font-size:12px;cursor:pointer;">Cancel</button>
+      <button id="rename-confirm" style="flex:1;padding:10px;background:var(--red);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">Save</button>
+    </div>
+  `;
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+  const input = document.getElementById("rename-input");
+  const errEl = document.getElementById("rename-error");
+  const btn = document.getElementById("rename-confirm");
+  input.focus();
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") btn.click(); if (e.key === "Escape") overlay.remove(); });
+  btn.onclick = () => {
+    const val = input.value.trim();
+    if (!val || val.length < 1) { errEl.textContent = "Enter a name"; errEl.style.display = "block"; return; }
+    if (/^0x[0-9a-fA-F]{40}$/.test(val)) { errEl.textContent = "Pick a real name, not an address"; errEl.style.display = "block"; return; }
+    if (/[<>"'`\\:/@]/.test(val) || /[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\ufeff\u00ad]/.test(val)) { errEl.textContent = "Name contains invalid characters"; errEl.style.display = "block"; return; }
+    btn.disabled = true; btn.textContent = "Saving...";
+    socket.emit("update-name", { newName: val });
+    const onSuccess = ({ oldName, newName }) => {
+      socket.off("rename-error", onError);
+      myName = newName;
+      localStorage.setItem("om_name", newName);
+      localStorage.setItem("om_last_name", newName);
+      // Re-key own DM pair cache: pairs are "sorted(me:peer)" so keys referencing old name must update
+      const oldLower = oldName.toLowerCase();
+      const newLower = newName.toLowerCase();
+      for (const [peerKey, msgs] of dmMessages.entries()) {
+        // Messages are keyed by peer's lowercase name — the key itself doesn't embed our name,
+        // but update sender_name inside cached messages so they display correctly
+        for (const m of msgs) {
+          if (m.senderName && m.senderName.toLowerCase() === oldLower) m.senderName = newName;
+        }
+      }
+      $("#my-name-display").textContent = newName;
+      overlay.remove();
+      showToast("Name updated!", "success");
+      showProfile(newName);
+    };
+    const onError = ({ message }) => {
+      socket.off("renamed", onSuccess);
+      errEl.textContent = message; errEl.style.display = "block";
+      btn.disabled = false; btn.textContent = "Save";
+    };
+    socket.once("renamed", onSuccess);
+    socket.once("rename-error", onError);
+    setTimeout(() => { socket.off("renamed", onSuccess); socket.off("rename-error", onError); }, 10000);
+  };
 }
 
 window.focusReply = function(rootId, authorName) {

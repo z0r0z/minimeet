@@ -2038,9 +2038,9 @@ async function dbGetWalletOwner(walletAddress) {
 const rateLimitBuckets = new Map(); // socketId -> { event -> { count, resetAt } }
 
 function rateLimit(socket, event, maxPerWindow, windowMs = 10_000) {
-  const sid = socket.id;
-  if (!rateLimitBuckets.has(sid)) rateLimitBuckets.set(sid, {});
-  const buckets = rateLimitBuckets.get(sid);
+  const key = socket.userId || socket.id;
+  if (!rateLimitBuckets.has(key)) rateLimitBuckets.set(key, {});
+  const buckets = rateLimitBuckets.get(key);
   const now = Date.now();
   if (!buckets[event] || now > buckets[event].resetAt) {
     buckets[event] = { count: 1, resetAt: now + windowMs };
@@ -2051,11 +2051,12 @@ function rateLimit(socket, event, maxPerWindow, windowMs = 10_000) {
   return true;
 }
 
-// Clean up rate limit data for disconnected sockets every 60s
+// Clean up rate limit data for disconnected users/sockets every 60s
 setInterval(() => {
   const activeSockets = new Set(io.sockets.sockets.keys());
-  for (const sid of rateLimitBuckets.keys()) {
-    if (!activeSockets.has(sid)) rateLimitBuckets.delete(sid);
+  const activeUserIds = new Set(onlineUsers.keys());
+  for (const key of rateLimitBuckets.keys()) {
+    if (!activeSockets.has(key) && !activeUserIds.has(key)) rateLimitBuckets.delete(key);
   }
 }, 60_000);
 
@@ -2205,6 +2206,8 @@ const activeCalls = new Map();
 const activeStreams = new Map(); // streamId -> { streamerId, streamerName, streamerAvatar, streamerXUsername, title, startedAt, viewers: Set<userId> }
 const privateRooms = new Map(); // roomId -> { creatorId, creatorName, createdAt, guestId?, guestName? }
 const takenNames = new Map();
+const pendingRenames = new Set(); // lock to prevent concurrent renames to the same name
+const renameCooldowns = new Map(); // identityKey -> timestamp of last successful rename (24h cooldown)
 const disconnectTimers = new Map();
 
 const CALL_DURATION_MS = 60_000;
@@ -3295,6 +3298,232 @@ io.on("connection", (socket) => {
     socket.emit("profile-updated", { bio: profile.bio, banner: profile.banner });
   });
 
+  // Rename — only for verified users (wallet or X authenticated)
+  socket.on("update-name", async ({ newName }) => {
+    if (!rateLimit(socket, "rename", 2, 60_000)) { socket.emit("rename-error", { message: "Too many rename attempts. Try again in a minute." }); return; }
+    const userId = socket.userId; if (!userId) return;
+    const userData = onlineUsers.get(userId); if (!userData) return;
+    // Only verified users can rename
+    if (!userData.walletAddress && !userData.xUsername) {
+      socket.emit("rename-error", { message: "Link a wallet or X account first to change your name" });
+      return;
+    }
+    if (!newName || typeof newName !== "string") return;
+    const trimmed = newName.trim().slice(0, MAX_NAME_LENGTH);
+    if (trimmed.length < 1 || /^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
+      socket.emit("rename-error", { message: "Pick a real name (not a wallet address)" });
+      return;
+    }
+    if (/[<>"'`\\:/@]/.test(trimmed) || /[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\ufeff\u00ad]/.test(trimmed)) {
+      socket.emit("rename-error", { message: "Name contains invalid characters" });
+      return;
+    }
+    // Block reserved/dangerous names
+    const reservedNames = new Set(["admin", "system", "null", "undefined", "constructor", "__proto__", "prototype", "moderator", "support", "help", "bot"]);
+    if (reservedNames.has(trimmed.toLowerCase())) {
+      socket.emit("rename-error", { message: "That name is reserved" });
+      return;
+    }
+    // Prevent renaming during active calls or streams
+    if (isUserInCall(userId)) {
+      socket.emit("rename-error", { message: "Can't rename while in a call" });
+      return;
+    }
+    for (const [, s] of activeStreams) {
+      if (s.streamerId === userId) {
+        socket.emit("rename-error", { message: "Can't rename while streaming" });
+        return;
+      }
+    }
+    const oldName = userData.name;
+    if (trimmed.toLowerCase() === oldName.toLowerCase()) return; // no change
+    // Acquire lock BEFORE uniqueness checks to close the TOCTOU window during async isNameClaimed
+    const lockKey = trimmed.toLowerCase();
+    if (pendingRenames.has(lockKey)) {
+      socket.emit("rename-error", { message: "Someone else is claiming that name — try again" });
+      return;
+    }
+    pendingRenames.add(lockKey);
+    try { // finally block guarantees pendingRenames cleanup on any unexpected throw
+    // Check uniqueness (now protected by the lock)
+    if (isNameTaken(trimmed, userId)) {
+      socket.emit("rename-error", { message: `"${trimmed}" is already taken` });
+      return;
+    }
+    if (await isNameClaimed(trimmed, userData.xUsername, userData.walletAddress)) {
+      socket.emit("rename-error", { message: `"${trimmed}" belongs to another verified account` });
+      return;
+    }
+    // Enforce per-user rename cooldown (once per 24h, keyed by identity so reconnects don't reset it)
+    const now = Date.now();
+    const RENAME_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+    const identityKey = userData.walletAddress || userData.xUsername; // always set (verified-only gate above)
+    const lastRenameAt = renameCooldowns.get(identityKey);
+    if (lastRenameAt && (now - lastRenameAt) < RENAME_COOLDOWN_MS) {
+      const remaining = Math.ceil((RENAME_COOLDOWN_MS - (now - lastRenameAt)) / (60 * 60 * 1000));
+      socket.emit("rename-error", { message: `You can rename again in ~${remaining}h` });
+      return;
+    }
+    // Migrate persisted data BEFORE updating in-memory (so failure leaves state consistent)
+    const oldKey = oldName.toLowerCase().trim();
+    const newKey = trimmed.toLowerCase().trim();
+    try {
+      // Core data (must succeed)
+      const stats = await dbGetStats(oldKey);
+      await dbSetStats(newKey, stats);
+      const avatar = await dbGetAvatar(oldKey);
+      if (avatar) await dbSetAvatar(newKey, avatar);
+      const profile = await dbGetProfile(oldKey);
+      await dbSetProfile(newKey, profile);
+      if (userData.walletAddress) {
+        // UPDATE existing row instead of insert+delete to avoid UNIQUE constraint violation
+        // on wallet_address (two rows would briefly share the same address)
+        if (supabase) {
+          await supabase.from("wallet_addresses").update({ name: newKey, updated_at: new Date().toISOString() }).eq("name", oldKey);
+        } else {
+          jsonSet("wallet_addresses", oldKey, null);
+          jsonSet("wallet_addresses", newKey, userData.walletAddress);
+        }
+      }
+      // Carry over E2E public key from old directory entry
+      const oldPubKey = await dbGetPublicKey(oldKey);
+      await dbAddToDirectory(trimmed, { displayName: trimmed, xUsername: userData.xUsername, walletAddress: userData.walletAddress, avatar: userData.avatar });
+      if (oldPubKey) await dbSetPublicKey(trimmed, oldPubKey);
+      const oldToken = await dbGetSessionToken(oldKey);
+      if (oldToken) {
+        await dbSetSessionToken(newKey, oldToken);
+      }
+      // Delete old identity records BEFORE point-of-no-return to prevent impersonation.
+      // If someone claims the old name before these are scrubbed, they'd inherit verified identity data.
+      if (supabase) {
+        await supabase.from("user_directory").delete().eq("name", oldKey);
+        await supabase.from("user_profiles").delete().eq("name", oldKey);
+        await supabase.from("call_stats").delete().eq("name", oldKey);
+        await supabase.from("avatars").delete().eq("name", oldKey);
+        // wallet_addresses already updated above (not deleted) to avoid UNIQUE violation
+        await supabase.from("session_tokens").delete().eq("name", oldKey);
+      } else {
+        jsonSet("user_profiles", oldKey, null);
+        jsonSet("session_tokens", oldKey, null);
+      }
+    } catch (e) {
+      console.warn("Rename core migration failed:", e.message);
+      socket.emit("rename-error", { message: "Rename failed — please try again" });
+      return; // don't update in-memory, keep old name
+    }
+    // Core succeeded — update in-memory (point of no return)
+    takenNames.delete(oldName.toLowerCase());
+    takenNames.set(trimmed.toLowerCase(), userId);
+    userData.name = trimmed;
+    renameCooldowns.set(identityKey, now);
+    // Migrate relational data (best-effort — failures are non-fatal but logged)
+    if (supabase) {
+      // Contacts: migrate user's OWN contact list + other users' references
+      try { await supabase.from("contacts").update({ owner: newKey }).eq("owner", oldKey); } catch (e) { console.warn("[RENAME] contacts owner migration:", e.message); }
+      try { await supabase.from("contacts").update({ contact_name: newKey }).eq("contact_name", oldKey); } catch (e) { console.warn("[RENAME] contacts ref migration:", e.message); }
+      // Notifications: migrate to new name
+      try { await supabase.from("notifications").update({ recipient: newKey }).eq("recipient", oldKey); } catch (e) { console.warn("[RENAME] notification recipient migration:", e.message); }
+      try { await supabase.from("notifications").update({ from_user: newKey }).eq("from_user", oldKey); } catch (e) { console.warn("[RENAME] notification from_user migration:", e.message); }
+      // DMs: update pair keys and sender fields
+      try {
+        const safeOld = oldKey.replace(/[%_\\]/g, "\\$&");
+        const [{ data: d1 }, { data: d2 }] = await Promise.all([
+          supabase.from("direct_messages").select("id, pair").like("pair", `${safeOld}:%`).range(0, 49999),
+          supabase.from("direct_messages").select("id, pair").like("pair", `%:${safeOld}`).range(0, 49999),
+        ]);
+        const seen = new Set();
+        for (const dm of [...(d1 || []), ...(d2 || [])]) {
+          if (seen.has(dm.id)) continue; seen.add(dm.id);
+          const parts = dm.pair.split(":");
+          const newPair = parts.map(p => p === oldKey ? newKey : p).sort().join(":");
+          await supabase.from("direct_messages").update({ pair: newPair }).eq("id", dm.id);
+        }
+        // Update sender/sender_name in bulk (separate from pair update)
+        await supabase.from("direct_messages").update({ sender: newKey, sender_name: trimmed }).eq("sender", oldKey);
+      } catch (e) { console.warn("DM migration error:", e.message); }
+      // Group memberships
+      try { await supabase.from("group_members").update({ user_name: newKey }).eq("user_name", oldKey); } catch (e) { console.warn("[RENAME] group members migration:", e.message); }
+      // Gated room memberships
+      try { await supabase.from("gated_room_members").update({ user_name: newKey }).eq("user_name", oldKey); } catch (e) { console.warn("[RENAME] gated room members migration:", e.message); }
+      // Gated rooms created by this user
+      try { await supabase.from("gated_rooms").update({ creator: newKey }).eq("creator", oldKey); } catch (e) { console.warn("[RENAME] gated rooms creator migration:", e.message); }
+      // Launched tokens
+      try { await supabase.from("launched_tokens").update({ creator: newKey }).eq("creator", oldKey); } catch (e) { console.warn("[RENAME] launched tokens migration:", e.message); }
+      // Posts
+      try { await supabase.from("posts").update({ author: newKey }).eq("author", oldKey); } catch (e) { console.warn("[RENAME] posts migration:", e.message); }
+      // Pair meetings: update pair keys (social score + credits)
+      try {
+        const safeOld = oldKey.replace(/[%_\\]/g, "\\$&");
+        const [{ data: p1 }, { data: p2 }] = await Promise.all([
+          supabase.from("pair_meetings").select("pair").like("pair", `${safeOld}:%`).range(0, 49999),
+          supabase.from("pair_meetings").select("pair").like("pair", `%:${safeOld}`).range(0, 49999),
+        ]);
+        const seen = new Set();
+        for (const row of [...(p1 || []), ...(p2 || [])]) {
+          if (seen.has(row.pair)) continue; seen.add(row.pair);
+          const parts = row.pair.split(":");
+          const newPair = parts.map(p => p === oldKey ? newKey : p).sort().join(":");
+          await supabase.from("pair_meetings").update({ pair: newPair }).eq("pair", row.pair);
+        }
+      } catch (e) { console.warn("Pair meetings migration error:", e.message); }
+      // Post likes & reposts: migrate to prevent duplicates after rename
+      try { await supabase.from("post_likes").update({ user_name: newKey }).eq("user_name", oldKey); } catch (e) { console.warn("[RENAME] post likes migration:", e.message); }
+      try { await supabase.from("reposts").update({ user_name: newKey }).eq("user_name", oldKey); } catch (e) { console.warn("[RENAME] reposts migration:", e.message); }
+      // DM read cursors
+      try { await supabase.from("dm_read_cursors").update({ name: newKey }).eq("name", oldKey); } catch (e) { console.warn("[RENAME] dm read cursors (name) migration:", e.message); }
+      try { await supabase.from("dm_read_cursors").update({ peer_name: newKey }).eq("peer_name", oldKey); } catch (e) { console.warn("[RENAME] dm read cursors (peer) migration:", e.message); }
+      // Token trades
+      try { await supabase.from("token_trades").update({ trader_name: trimmed }).ilike("trader_name", oldKey); } catch (e) { console.warn("[RENAME] token trades migration:", e.message); }
+      // User preferences (auto-meet settings)
+      try { await supabase.from("user_prefs").update({ name: newKey }).eq("name", oldKey); } catch (e) { console.warn("[RENAME] user prefs migration:", e.message); }
+      // Group chats created by this user
+      try { await supabase.from("group_chats").update({ creator: newKey }).eq("creator", oldKey); } catch (e) { console.warn("[RENAME] group chats creator migration:", e.message); }
+      // Last-call timestamps (pair keys like "alice:bob")
+      try {
+        const safeOld = oldKey.replace(/[%_\\]/g, "\\$&");
+        const [{ data: lc1 }, { data: lc2 }] = await Promise.all([
+          supabase.from("last_calls").select("pair").like("pair", `${safeOld}:%`).range(0, 49999),
+          supabase.from("last_calls").select("pair").like("pair", `%:${safeOld}`).range(0, 49999),
+        ]);
+        const seen = new Set();
+        for (const row of [...(lc1 || []), ...(lc2 || [])]) {
+          if (seen.has(row.pair)) continue; seen.add(row.pair);
+          const parts = row.pair.split(":");
+          const newPair = parts.map(p => p === oldKey ? newKey : p).sort().join(":");
+          await supabase.from("last_calls").update({ pair: newPair }).eq("pair", row.pair);
+        }
+      } catch (e) { console.warn("[RENAME] last calls migration:", e.message); }
+      // Message history (best-effort cosmetic — chat_reactions embed usernames in JSON blobs, not migrated)
+      try { await supabase.from("public_messages").update({ sender: newKey, sender_name: trimmed }).eq("sender", oldKey); } catch (e) { console.warn("[RENAME] public messages migration:", e.message); }
+      try { await supabase.from("group_messages").update({ sender: newKey, sender_name: trimmed }).eq("sender", oldKey); } catch (e) { console.warn("[RENAME] group messages migration:", e.message); }
+      try { await supabase.from("gated_room_messages").update({ sender: newKey, sender_name: trimmed }).eq("sender", oldKey); } catch (e) { console.warn("[RENAME] gated room messages migration:", e.message); }
+    }
+    // Clear old name from ALL caches so stale data isn't served
+    statsCache.delete(oldKey);
+    avatarCache.delete(oldKey);
+    profileCache.delete(oldKey);
+    contactsCache.delete(oldKey);
+    // Update other users' cached contact sets: swap oldKey → newKey
+    for (const [owner, contacts] of contactsCache) {
+      if (contacts.has(oldKey)) { contacts.delete(oldKey); contacts.add(newKey); }
+    }
+    // Clear read cursors keyed by old name (format: "name:peer")
+    for (const k of readCursorCache.keys()) {
+      if (k.startsWith(oldKey + ":") || k.endsWith(":" + oldKey)) readCursorCache.delete(k);
+    }
+    // Clear any autoMeetPending entries referencing old name
+    for (const k of autoMeetPending) {
+      if (k.startsWith(oldKey + ":") || k.endsWith(":" + oldKey)) autoMeetPending.delete(k);
+    }
+    // Audit log: record rename for abuse investigation
+    console.log(`[RENAME] "${oldName}" → "${trimmed}" | wallet=${userData.walletAddress || "none"} x=${userData.xUsername || "none"} ip=${socket.handshake?.address || "unknown"}`);
+    socket.emit("renamed", { oldName, newName: trimmed });
+    // Notify all connected clients so they can update contacts, DM tabs, etc.
+    socket.broadcast.emit("user-renamed", { oldName, newName: trimmed });
+    broadcastUserList();
+    } finally { pendingRenames.delete(lockKey); }
+  });
+
   socket.on("get-social-score", async () => {
     const userId = socket.userId; if (!userId) return;
     const userData = onlineUsers.get(userId); if (!userData) return;
@@ -3701,6 +3930,10 @@ io.on("connection", (socket) => {
     if (!me || me.role !== "admin") { socket.emit("group-error", { message: "Only admin can rename" }); return; }
     const newName = (name || "").trim().slice(0, 50);
     if (!newName) return;
+    if (/[<>"'`\\]/.test(newName) || /[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\ufeff\u00ad]/.test(newName)) {
+      socket.emit("group-error", { message: "Group name contains invalid characters" });
+      return;
+    }
     if (supabase) {
       try { await supabase.from("group_chats").update({ name: newName }).eq("id", groupId); } catch {}
     } else {
