@@ -1070,7 +1070,8 @@ async function getMultiTokenSummary(tokenAddresses) {
   const uncached = [];
   const now = Date.now();
   for (const addr of tokenAddresses) {
-    const cached = _tokenSummaryCache.get(addr);
+    const key = addr.toLowerCase();
+    const cached = _tokenSummaryCache.get(key);
     if (cached && now - cached.ts < _TOKEN_SUMMARY_TTL) out[addr] = cached.data;
     else uncached.push(addr);
   }
@@ -1100,7 +1101,7 @@ async function getMultiTokenSummary(tokenAddresses) {
             const total = Number(_saleIface.decodeFunctionResult("observationCount", res1[i * 2 + 1].returnData)[0]);
             if (total > 0) {
               const start = Math.max(0, total - 10);
-              obsCalls.push({ target: CURVE_SALE_ADDRESS, allowFailure: true, callData: _saleIface.encodeFunctionData("observe", [chunk[i], start, Math.min(total, 10)]) });
+              obsCalls.push({ target: CURVE_SALE_ADDRESS, allowFailure: true, callData: _saleIface.encodeFunctionData("observe", [chunk[i], start, total]) });
               obsMeta.push({ idx: i, total });
             }
           }
@@ -1125,7 +1126,7 @@ async function getMultiTokenSummary(tokenAddresses) {
           }
           const entry = { curve, graduable: false, observations, total };
           out[chunk[i]] = entry;
-          _tokenSummaryCache.set(chunk[i], { data: entry, ts: now });
+          _tokenSummaryCache.set(chunk[i].toLowerCase(), { data: entry, ts: now });
         }
         _rpcOk(rpc);
         fetched = true;

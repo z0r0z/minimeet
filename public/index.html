@@ -6234,9 +6234,11 @@ function connectSocket() {
     // Update mini chart if visible on profile
     const miniCanvas = document.querySelector(`.coin-mini-chart[data-token="${data.tokenAddress}"]`);
     if (miniCanvas && data.observations) drawMiniChart(miniCanvas, data.observations);
-    // Update full chart if overlay is open
-    const fullCanvas = document.getElementById("token-chart-canvas");
-    if (fullCanvas) handleTokenChart(data);
+    // Update full chart if overlay is open for this token
+    if (_chartTokenAddress === data.tokenAddress) {
+      const fullCanvas = document.getElementById("token-chart-canvas");
+      if (fullCanvas) handleTokenChart(data);
+    }
   });
 
   socket.on("token-info", (data) => {
@@ -6273,23 +6275,26 @@ function connectSocket() {
     el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;"><span style="color:var(--text-muted);">Creator earnings</span><span style="font-weight:600;color:#4CAF50;">${totalETH} ETH</span></div><div style="font-size:10px;color:var(--text-muted);margin-top:2px;">${totalTrades} trades (${totalBuys} buys, ${totalSells} sells)</div>`;
   });
 
+  let _tradeRefreshTimer = null;
   socket.on("token-trade", (trade) => {
     if (_chartTokenAddress === trade.tokenAddress) {
-      // Update activity list (whether visible or not)
+      // Optimistically update activity list
       const actEl = document.getElementById("chart-activity-list");
       if (actEl) {
         if (!actEl._trades) actEl._trades = [];
         actEl._trades = [trade, ...actEl._trades].slice(0, 50);
         renderActivityList(actEl._trades);
       }
-      // Refresh holders, chart, activity, and earnings from server
-      if (socket) {
-        socket.emit("get-token-holders", { tokenAddress: _chartTokenAddress });
-        socket.emit("get-token-chart", { tokenAddress: _chartTokenAddress });
-        socket.emit("get-token-earnings", { tokenAddress: _chartTokenAddress });
-        // Also re-fetch full activity from DB to catch any trades we may have missed
-        socket.emit("get-token-activity", { tokenAddress: _chartTokenAddress });
-      }
+      // Debounce server re-fetch (coalesce rapid trades into one refresh)
+      clearTimeout(_tradeRefreshTimer);
+      _tradeRefreshTimer = setTimeout(() => {
+        if (socket && _chartTokenAddress) {
+          socket.emit("get-token-holders", { tokenAddress: _chartTokenAddress });
+          socket.emit("get-token-chart", { tokenAddress: _chartTokenAddress });
+          socket.emit("get-token-earnings", { tokenAddress: _chartTokenAddress });
+          socket.emit("get-token-activity", { tokenAddress: _chartTokenAddress });
+        }
+      }, 2000);
     }
   });
 
@@ -7072,14 +7077,18 @@ async function ensureAppWalletFunded(requiredWei, label) {
 
 async function _getCurveSnapshot() {
   // Prefer the external wallet's provider (no CORS issues) if available
-  const providers = [];
-  if (window._signer?.provider) providers.push(window._signer.provider);
-  for (let i = 0; i < _READ_RPCS.length; i++) providers.push(_qProvider());
-  for (const p of providers) {
+  if (window._signer?.provider) {
     try {
-      const sale = new ethers.Contract(CURVE_SALE_ADDRESS, CURVE_SALE_LAUNCH_ABI, p);
+      const sale = new ethers.Contract(CURVE_SALE_ADDRESS, CURVE_SALE_LAUNCH_ABI, window._signer.provider);
       return await sale.curves(_chartTokenAddress);
-    } catch { if (p === _qProviderCache) _qProviderRotate(); }
+    } catch {}
+  }
+  // Fallback: try each RPC
+  for (let i = 0; i < _READ_RPCS.length; i++) {
+    try {
+      const sale = new ethers.Contract(CURVE_SALE_ADDRESS, CURVE_SALE_LAUNCH_ABI, _qProvider());
+      return await sale.curves(_chartTokenAddress);
+    } catch { _qProviderRotate(); }
   }
   throw new Error("All RPCs failed");
 }
@@ -7130,15 +7139,19 @@ async function _fetchTokenBalance() {
   if (!_chartTokenAddress) return;
   const addr = window._connectedAddress || myAppWallet?.address || myWalletAddress;
   if (!addr) return;
-  const providers = [];
-  if (window._signer?.provider) providers.push(window._signer.provider);
-  for (let i = 0; i < _READ_RPCS.length; i++) providers.push(_qProvider());
-  for (const p of providers) {
+  if (window._signer?.provider) {
     try {
-      const token = new ethers.Contract(_chartTokenAddress, ["function balanceOf(address) view returns (uint256)"], p);
+      const token = new ethers.Contract(_chartTokenAddress, ["function balanceOf(address) view returns (uint256)"], window._signer.provider);
       _userTokenBalance = await token.balanceOf(addr);
       return;
-    } catch { if (p === _qProviderCache) _qProviderRotate(); }
+    } catch {}
+  }
+  for (let i = 0; i < _READ_RPCS.length; i++) {
+    try {
+      const token = new ethers.Contract(_chartTokenAddress, ["function balanceOf(address) view returns (uint256)"], _qProvider());
+      _userTokenBalance = await token.balanceOf(addr);
+      return;
+    } catch { _qProviderRotate(); }
   }
   _userTokenBalance = null;
 }
@@ -7278,6 +7291,7 @@ window.executeSell = async function() {
   if (!valStr || isNaN(val) || val <= 0) { showToast("Enter a token amount", "error"); return; }
   const signer = await _resolveSigner();
   if (!signer) return;
+  if (!(await ensureAppWalletFunded(0n, "Selling tokens"))) return;
   const btn = document.getElementById("trade-sell-btn");
   const statusEl = document.getElementById("trade-status");
   btn.disabled = true; btn.textContent = "Preparing...";
