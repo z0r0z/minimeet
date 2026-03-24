@@ -94,7 +94,7 @@
       transform: translateX(-50%) translateY(-100px);
       background: #1E1E2A; border: 1px solid var(--border);
       border-radius: 12px; padding: 12px 20px;
-      font-size: 14px; color: var(--text); z-index: 200;
+      font-size: 14px; color: var(--text); z-index: 999;
       box-shadow: 0 8px 32px rgba(0,0,0,0.5);
       transition: transform 0.3s ease;
       max-width: 90vw; text-align: center;
@@ -7081,14 +7081,14 @@ async function _getCurveSnapshot() {
     try {
       const sale = new ethers.Contract(CURVE_SALE_ADDRESS, CURVE_SALE_LAUNCH_ABI, window._signer.provider);
       return await sale.curves(_chartTokenAddress);
-    } catch {}
+    } catch (e) { console.warn("_getCurveSnapshot signer provider failed:", e.message); }
   }
   // Fallback: try each RPC
   for (let i = 0; i < _READ_RPCS.length; i++) {
     try {
       const sale = new ethers.Contract(CURVE_SALE_ADDRESS, CURVE_SALE_LAUNCH_ABI, _qProvider());
       return await sale.curves(_chartTokenAddress);
-    } catch { _qProviderRotate(); }
+    } catch (e) { console.warn(`_getCurveSnapshot RPC ${_qProviderIdx} failed:`, e.message); _qProviderRotate(); }
   }
   throw new Error("All RPCs failed");
 }
