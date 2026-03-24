@@ -1119,7 +1119,7 @@ async function dbCreateGatedRoom(id, name, creator, tokenAddress, tokenType, min
   if (supabase) {
     try {
       await supabase.from("gated_rooms").insert({ id, name, creator, token_address: tokenAddress, token_type: tokenType, min_balance: minBalance, avatar: avatar || null, description: desc, created_at: new Date().toISOString() });
-      await supabase.from("gated_room_members").insert({ room_id: id, user_name: creator, wallet_address: wallet, joined_at: new Date().toISOString() });
+      await supabase.from("gated_room_members").upsert({ room_id: id, user_name: creator, wallet_address: wallet, joined_at: new Date().toISOString() }, { onConflict: "room_id,user_name" });
     } catch (e) { console.warn("Gated room create error:", e.message); }
     return;
   }
@@ -1155,7 +1155,7 @@ async function dbGetGatedRoomMembers(roomId) {
 
 async function dbAddGatedRoomMember(roomId, userName, walletAddress) {
   if (supabase) {
-    try { await supabase.from("gated_room_members").upsert({ room_id: roomId, user_name: userName.toLowerCase().trim(), wallet_address: walletAddress.toLowerCase(), joined_at: new Date().toISOString() }); } catch (e) { console.warn("Gated room member add error:", e.message); }
+    try { await supabase.from("gated_room_members").upsert({ room_id: roomId, user_name: userName.toLowerCase().trim(), wallet_address: walletAddress.toLowerCase(), joined_at: new Date().toISOString() }, { onConflict: "room_id,user_name" }); } catch (e) { console.warn("Gated room member add error:", e.message); }
     return;
   }
   const rooms = jsonGet("gated_rooms", "_all");
