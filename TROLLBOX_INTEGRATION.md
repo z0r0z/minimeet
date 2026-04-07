@@ -50,7 +50,7 @@ Without this, Socket.IO connections from your dapp will be rejected with a CORS 
 
 MiniMeet uses EIP-191 message signing with a server-issued nonce. The flow:
 
-1. **Request nonce** — `GET https://minimeet.cc/auth/wallet/nonce?address=0x...`
+1. **Request nonce** — `GET https://www.minimeet.cc/auth/wallet/nonce?address=0x...`
 2. **Sign message** — User signs `"Sign in to minimeet.cc\n\nNonce: <nonce>"` with their wallet
 3. **Register via Socket.IO** — Send the signature in the `register` event
 
@@ -124,7 +124,7 @@ async function resolveDisplayName(address) {
 ```js
 import { io } from "socket.io-client";
 
-const MINIMEET_URL = "https://minimeet.cc";
+const MINIMEET_URL = "https://www.minimeet.cc";
 
 let socket = null;
 let myUserId = null;
@@ -369,7 +369,7 @@ function stringToColor(str) {
   <!-- Trollbox widget (paste the HTML from Step 7 here) -->
 
   <script>
-    const MINIMEET_URL = "https://minimeet.cc";
+    const MINIMEET_URL = "https://www.minimeet.cc";
     const WEI_REGISTRY = "0x0000000000696760E15f265e828DB644A0c242EB";
     const RPC_URL = "https://ethereum.publicnode.com";
 
