@@ -21,6 +21,18 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
   : ["https://minimeet.cc", "https://www.minimeet.cc", "https://zfi.wei.is", "http://localhost:3000", "http://localhost:3001"];
 
+// ─── CORS for HTTP routes ────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
 // ─── Security headers ────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
