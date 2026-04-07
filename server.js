@@ -19,7 +19,7 @@ const IS_PROD = process.env.NODE_ENV === "production";
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map(s => s.trim())
-  : IS_PROD ? ["https://minimeet.cc"] : ["http://localhost:3001", "https://minimeet.cc"];
+  : ["https://minimeet.cc", "https://zfi.wei.is", "http://localhost:3000", "http://localhost:3001"];
 
 // ─── Security headers ────────────────────────────────────────────────────────
 app.use((req, res, next) => {
