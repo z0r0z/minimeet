@@ -16,6 +16,12 @@
   <script src="/walletconnect.min.js"></script>
   <script src="/Wallet.js"></script>
   <link rel="stylesheet" href="/wallet.css">
+  <link rel="manifest" href="/manifest.json">
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
