@@ -1260,7 +1260,8 @@ async function dbSaveGatedRoomMsg(roomId, msg) {
     try {
       const row = { id: msg.id, room_id: roomId, sender: msg.sender, sender_name: msg.senderName, text: msg.text, created_at: new Date(msg.ts).toISOString() };
       if (msg.image) row.image = msg.image;
-      await supabase.from("gated_room_messages").insert(row);
+      const { error } = await supabase.from("gated_room_messages").insert(row);
+      if (error) console.warn("Gated room msg write error:", error.message, error.details, error.hint);
     } catch (e) { console.warn("Gated room msg write error:", e.message); }
     return;
   }
@@ -1276,7 +1277,8 @@ async function dbLoadGatedRoomMsgs(roomId, limit = 50, before = null) {
     try {
       let query = supabase.from("gated_room_messages").select("*").eq("room_id", roomId).order("created_at", { ascending: false }).limit(limit);
       if (before) query = query.lt("created_at", new Date(before).toISOString());
-      const { data } = await query;
+      const { data, error } = await query;
+      if (error) console.warn("Gated room msg read error:", error.message, error.details, error.hint);
       if (data) return data.reverse().map(d => ({ id: d.id, sender: d.sender, senderName: d.sender_name, text: d.text, image: d.image || null, ts: new Date(d.created_at).getTime() }));
     } catch (e) { console.warn("Gated room msg read error:", e.message); }
     return [];
@@ -4110,7 +4112,8 @@ io.on("connection", (socket) => {
     if (!room) { socket.emit("gated-room-error", { message: "Room not found" }); return; }
     const members = await dbGetGatedRoomMembers(roomId);
     const myKey = userData.name.toLowerCase().trim();
-    if (members.find(m => m.userName === myKey)) {
+    const myWallet = (walletAddress || userData.walletAddress || userData.appWalletAddress || "").toLowerCase();
+    if (members.find(m => m.userName === myKey || (myWallet && m.walletAddress === myWallet))) {
       socket.emit("gated-room-joined", { roomId, name: room.name });
       return;
     }
@@ -4201,7 +4204,8 @@ io.on("connection", (socket) => {
     const userData = onlineUsers.get(userId); if (!userData) return;
     const members = await dbGetGatedRoomMembers(roomId);
     const myKey = userData.name.toLowerCase().trim();
-    const myMembership = members.find(m => m.userName === myKey);
+    const myWallet = (userData.walletAddress || userData.appWalletAddress || "").toLowerCase();
+    const myMembership = members.find(m => m.userName === myKey || (myWallet && m.walletAddress === myWallet));
     if (!myMembership) return;
     // Periodic balance recheck — boot if below minimum (every 5 min per room, skip creator)
     const balCk = `${roomId}:${myKey}`;
@@ -4229,10 +4233,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("gated-room-history", async ({ roomId, limit, before }) => {
-    const userId = socket.userId; if (!userId) return;
-    const userData = onlineUsers.get(userId); if (!userData) return;
-    const members = await dbGetGatedRoomMembers(roomId);
-    if (!members.find(m => m.userName === userData.name.toLowerCase().trim())) return;
+    if (!roomId) return;
     const safeLimit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     const safeBefore = typeof before === "number" ? before : null;
     const messages = await dbLoadGatedRoomMsgs(roomId, safeLimit, safeBefore);
